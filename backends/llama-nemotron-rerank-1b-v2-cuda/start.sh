@@ -25,6 +25,9 @@ if [[ ! -f "$CHAT_TEMPLATE" ]]; then
   exit 1
 fi
 
+# 程序名稱前綴，nvidia-smi / ps 會顯示為 nemotron-rerank::EngineCore（取代預設的 VLLM）
+export VLLM_PROCESS_NAME_PREFIX="${VLLM_PROCESS_NAME_PREFIX:-nemotron-rerank}"
+
 # 讓 vLLM 能 import 專案目錄下的 rerank_middleware
 export PYTHONPATH="$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
 
