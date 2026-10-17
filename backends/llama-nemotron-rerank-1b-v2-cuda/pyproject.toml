@@ -4,5 +4,16 @@ version = "0.1.0"
 description = "vLLM reranker HTTP API for nvidia/llama-nemotron-rerank-1b-v2"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "orjson>=3.13.0",
     "vllm>=0.14.0",
 ]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

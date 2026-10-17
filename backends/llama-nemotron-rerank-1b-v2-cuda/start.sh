@@ -25,6 +25,9 @@ if [[ ! -f "$CHAT_TEMPLATE" ]]; then
   exit 1
 fi
 
+# 讓 vLLM 能 import 專案目錄下的 rerank_middleware
+export PYTHONPATH="$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
+
 exec uv run --project "$SCRIPT_DIR" vllm serve "$MODEL" \
   --host "$HOST" \
   --port "$PORT" \
@@ -34,4 +37,5 @@ exec uv run --project "$SCRIPT_DIR" vllm serve "$MODEL" \
   --max-model-len "$MAX_MODEL_LEN" \
   --trust-remote-code \
   --chat-template "$CHAT_TEMPLATE" \
+  --middleware rerank_middleware.DefaultTruncationMiddleware \
   "$@"
