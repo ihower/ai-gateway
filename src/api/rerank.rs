@@ -94,7 +94,8 @@ async fn rerank(svc: &ServicePool, path: &str, headers: &HeaderMap, body: Bytes)
         return Ok(passthrough(buf));
     }
 
-    let top_n = req.get("top_n").and_then(Value::as_u64).map(|n| n as usize);
+    // 與 vLLM 一致：top_n 為 0 視同未指定（回傳全部）
+    let top_n = req.get("top_n").and_then(Value::as_u64).filter(|n| *n > 0).map(|n| n as usize);
     let Some(Value::Array(docs)) = req.remove("documents") else { unreachable!("checked above") };
     let calls = chunks.iter().map(|chunk| {
         let mut sub = req.clone();

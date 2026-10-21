@@ -18,6 +18,7 @@ dependencies = [
  "anyhow",
  "arc-swap",
  "axum",
+ "base64",
  "bytes",
  "clap",
  "futures",

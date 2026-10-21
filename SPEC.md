@@ -148,8 +148,9 @@ services:
    - 各份**並行**送出，其餘欄位（`model`、`encoding_format`、`dimensions`、`user`）原樣帶入每個子請求
 3. **合併**：
    - `data`：依原始順序串接，每筆 `index` 改寫為原始陣列中的位置（`offset + 子回應 index`）
-   - `usage.prompt_tokens`、`usage.total_tokens`：加總
-   - `model`、`object`：取第一個子回應的值
+   - `usage` 內的數值欄位（`prompt_tokens`、`total_tokens` 等）：加總
+   - 其餘頂層欄位（`model`、`object`，以及後端額外回傳的欄位，例如 vLLM 的 `created`）：取第一個子回應的值
+   - `id`：若後端回應含 `id`，改為 gateway 產生的新 UUID
 
 ### 4.3 Response（OpenAI 格式）
 
@@ -195,6 +196,7 @@ services:
 2. **否則**：依 §4.2 相同規則把 documents 切成 K 份連續區段並行送出
    - 每個子請求的 `query`、`model` 與其他欄位相同
    - `top_n`：子請求帶 `min(top_n, 該份筆數)`（全域前 n 名必然落在各份的前 n 名之中，可減少回傳量）；未指定則不帶
+   - `top_n: 0` 視同未指定，回傳全部（與 vLLM 行為一致）
 3. **合併**：
    - 每筆結果的 `index` 改寫為 `offset + 子回應 index`
    - 全部結果依 `relevance_score` **由高到低**排序（分數相同時 index 小者在前，確保結果穩定）
