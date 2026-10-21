@@ -1,0 +1,25 @@
+[package]
+name = "ai-gateway"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+arc-swap = "1.9.3"
+axum = "0.8"
+bytes = "1.12.1"
+clap = { version = "4.6.7", features = ["derive", "env"] }
+futures = "0.3.34"
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "stream", "http2"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.154", features = ["raw_value"] }
+serde_yaml = "0.9.34"
+thiserror = "2.0.21"
+tokio = { version = "1.54.0", features = ["full"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["json", "env-filter"] }
+url = "2.5.8"
+uuid = { version = "1.28.0", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
