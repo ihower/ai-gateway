@@ -2,6 +2,8 @@
 # 啟動 nvidia/llama-nemotron-rerank-1b-v2 的 vLLM reranker HTTP API（/rerank、/score）
 # 可用環境變數覆寫設定，額外參數會直接傳給 vllm serve，例如：
 #   PORT=8000 ./start.sh --max-model-len 4096
+# 也可用 --gpu 指定 CUDA 裝置編號、--port 指定監聽 port，例如：
+#   ./start.sh --gpu 1 --port 8001
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -18,6 +20,25 @@ GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.4}"
 # 模型官方支援 8192 tokens；config 的 131072 只是沿用 Llama 3.2 的 RoPE 設定
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-8192}"
 CHAT_TEMPLATE="${CHAT_TEMPLATE:-$SCRIPT_DIR/nemotron-rerank.jinja}"
+
+# 解析 --gpu / --port（支援 `--opt 值` 與 `--opt=值`），其餘參數原樣傳給 vllm serve
+VLLM_ARGS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --gpu)
+      [[ $# -ge 2 ]] || { echo "--gpu 需要指定 CUDA 裝置編號" >&2; exit 1; }
+      export CUDA_VISIBLE_DEVICES="$2"; shift 2 ;;
+    --gpu=*)
+      export CUDA_VISIBLE_DEVICES="${1#*=}"; shift ;;
+    --port)
+      [[ $# -ge 2 ]] || { echo "--port 需要指定 port" >&2; exit 1; }
+      PORT="$2"; shift 2 ;;
+    --port=*)
+      PORT="${1#*=}"; shift ;;
+    *)
+      VLLM_ARGS+=("$1"); shift ;;
+  esac
+done
 
 # score template 是必要的，缺少時 query/passage 格式不會套用，分數會錯
 if [[ ! -f "$CHAT_TEMPLATE" ]]; then
@@ -41,4 +62,4 @@ exec uv run --project "$SCRIPT_DIR" vllm serve "$MODEL" \
   --trust-remote-code \
   --chat-template "$CHAT_TEMPLATE" \
   --middleware rerank_middleware.DefaultTruncationMiddleware \
-  "$@"
+  "${VLLM_ARGS[@]}"

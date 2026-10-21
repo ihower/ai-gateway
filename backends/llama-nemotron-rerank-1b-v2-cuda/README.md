@@ -28,6 +28,12 @@
 PORT=8000 KV_CACHE_MEMORY_BYTES=1G ./start.sh --max-num-batched-tokens 16384
 ```
 
+也可用 `--gpu` 指定 CUDA 裝置編號（設定 `CUDA_VISIBLE_DEVICES`）、`--port` 指定監聽 port（優先於 `PORT` 環境變數）：
+
+```bash
+./start.sh --gpu 1 --port 8001
+```
+
 | 環境變數 | 預設值 | 說明 |
 |---|---|---|
 | `MODEL` | `nvidia/llama-nemotron-rerank-1b-v2` | HF repo 或本地路徑 |
