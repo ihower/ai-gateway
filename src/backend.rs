@@ -341,11 +341,26 @@ mod tests {
     }
 
     #[test]
+    fn weighted_pick_follows_ratio() {
+        let p = pool(&[45, 55], &[]);
+        let mut counts = [0; 2];
+        for _ in 0..100 {
+            counts[p.pick(1, &[])[0]] += 1;
+        }
+        assert_eq!(counts, [45, 55]);
+        // 平滑分佈：任意連續 20 次的比例也接近 9:11，不會先連續打同一台
+        let first20 = smooth_wrr_schedule(&[45, 55])[..20].iter().filter(|i| **i == 0).count();
+        assert!((8..=10).contains(&first20), "{first20}");
+    }
+
+    #[test]
     fn split_sizes_are_balanced() {
         assert_eq!(split_sizes(5, &[1, 1]), vec![3, 2]);
         assert_eq!(split_sizes(2, &[1, 1]), vec![1, 1]);
         assert_eq!(split_sizes(7, &[1, 1, 1]), vec![3, 2, 2]);
         assert_eq!(split_sizes(8, &[3, 1]), vec![6, 2]);
+        assert_eq!(split_sizes(20, &[45, 55]), vec![9, 11]);
+        assert_eq!(split_sizes(100, &[55, 45]), vec![55, 45]);
         assert_eq!(split_sizes(10, &[1, 1]).iter().sum::<usize>(), 10);
     }
 

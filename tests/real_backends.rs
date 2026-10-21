@@ -369,8 +369,22 @@ async fn decision_requests() {
 
     let after = env.requests(ServiceKind::Decision);
     let used: Vec<u64> = after.iter().zip(&before).map(|(a, b)| a - b).collect();
-    assert_eq!(used, vec![4, 4], "round robin across both backends");
+    assert_eq!(used.iter().sum::<u64>(), 8, "every request reaches a backend");
+    assert!(used.iter().all(|n| *n > 0), "both backends should get traffic: {used:?}");
     println!("ok  decision   traffic per backend {used:?}");
+
+    // 權重分配：依 config.yaml 的 weight 比例（12371:12372 = 45:55）
+    let weights: Vec<u64> = env.app.pool.load().decision.backends.iter().map(|b| b.weight as u64).collect();
+    let total: u64 = weights.iter().sum();
+    let small = json!({"state": "hi", "questions": {"q": {"type": "noul", "instructions": "Is this a greeting?"}}});
+    let before = env.requests(ServiceKind::Decision);
+    for _ in 0..total {
+        let (status, _) = env.via(path, &small).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    let used: Vec<u64> = env.requests(ServiceKind::Decision).iter().zip(&before).map(|(a, b)| a - b).collect();
+    assert_eq!(used, weights, "weighted distribution over {total} requests");
+    println!("ok  decision   weighted distribution {used:?} for weights {weights:?}");
 
     let errors = [
         ("bad question type", json!({"state": "x", "questions": {"q": {"type": "bogus", "instructions": "?"}}})),

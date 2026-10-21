@@ -58,13 +58,17 @@ services:
     probe_model: null
     backends:
       - url: "http://127.0.0.1:12361"
+        weight: 1                    # 範例採相同權重，可依後端容量調整
       - url: "http://127.0.0.1:12362"
+        weight: 1
 
   decision:
     probe_model: null
     backends:
       - url: "http://127.0.0.1:12371"
+        weight: 1                    # 範例採相同權重，可依後端容量調整
       - url: "http://127.0.0.1:12372"
+        weight: 1
 ```
 
 - 每個 backend 可選填 `weight`（預設 1），用於拆分比例與輪流權重。
@@ -345,7 +349,9 @@ decision   (no change)
 ## 8. 後端選擇、健康檢查與錯誤處理
 
 ### 8.1 後端選擇
-- **加權輪流**（weighted round-robin），每個 service 各自一個原子計數器。
+- **加權輪流**（smooth weighted round-robin），每個 service 各自一個原子計數器，不看負載。
+  - 依各後端的 `weight` 比例分派，例如 `1` / `3` 即每 4 個 request 中 1 個與 3 個；分佈是平滑交錯的，不會先連續打同一台
+  - 拆分（embedding / rerank）時，各份筆數也依 `weight` 比例切分；權重相同即平分
 - 拆分時的 H（健康後端數）只計算**啟用中且健康**的後端。
 - `disabled` 的後端一律不選。
 - 啟用中的後端若全部 `unhealthy`，仍嘗試全部（避免因誤判而完全停擺）。
