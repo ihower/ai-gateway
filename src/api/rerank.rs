@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use axum::Extension;
 use axum::extract::{OriginalUri, State};
 use axum::http::HeaderMap;
 use axum::response::Response;
@@ -12,7 +13,7 @@ use serde_json::{Map, Value};
 use super::{Chunk, json_response, parse_object, passthrough, plan_chunks, sum_numbers};
 use crate::backend::ServicePool;
 use crate::server::App;
-use crate::upstream::{Flavor, Forward, GatewayError, call_once, call_with_retry};
+use crate::upstream::{CallLog, Flavor, Forward, GatewayError, call_once, call_with_retry};
 
 #[derive(Deserialize)]
 pub struct RerankResponse {
@@ -76,18 +77,25 @@ pub fn merge(parts: Vec<(Chunk, RerankResponse)>, top_n: Option<usize>) -> Map<S
     out
 }
 
-pub async fn handle(State(app): State<Arc<App>>, OriginalUri(uri): OriginalUri, headers: HeaderMap, body: Bytes) -> Response {
+pub async fn handle(
+    State(app): State<Arc<App>>,
+    Extension(log): Extension<CallLog>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     let pool = app.pool.load_full();
-    rerank(&pool.reranker, uri.path(), &headers, body).await.unwrap_or_else(|e| e.into_response(Flavor::Cohere))
+    let fwd = Forward::new(&headers, log);
+    rerank(&pool.reranker, uri.path(), fwd, body).await.unwrap_or_else(|e| e.into_response(Flavor::Cohere))
 }
 
-async fn rerank(svc: &ServicePool, path: &str, headers: &HeaderMap, body: Bytes) -> Result<Response, GatewayError> {
-    let fwd = Forward::from_headers(headers);
+async fn rerank(svc: &ServicePool, path: &str, fwd: Forward, body: Bytes) -> Result<Response, GatewayError> {
     let mut req = parse_object(&body)?;
     let n = match req.get("documents") {
         Some(Value::Array(docs)) if docs.len() > 1 => docs.len(),
         _ => 1,
     };
+    fwd.log.set_items(n);
     let chunks = plan_chunks(svc, n)?;
     if chunks.len() == 1 {
         let buf = call_with_retry(svc, chunks[0].backend, path, body, &fwd, true, Ok).await?;

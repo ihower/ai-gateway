@@ -1,5 +1,6 @@
 //! 呼叫後端、重試與錯誤轉換（SPEC §8.3–§8.5）。
 
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::body::Body;
@@ -9,23 +10,63 @@ use bytes::Bytes;
 use futures::StreamExt;
 use serde_json::json;
 
-use crate::backend::ServicePool;
+use crate::backend::{Backend, ServicePool};
 
 pub const REQUEST_ID: &str = "x-request-id";
 
-/// 從 client request 帶到後端的 header。
+/// 從 client request 帶到後端的 header，以及記錄這個 request 呼叫過哪些後端。
 #[derive(Clone, Default)]
 pub struct Forward {
     pub authorization: Option<HeaderValue>,
     pub request_id: Option<HeaderValue>,
+    pub log: CallLog,
 }
 
 impl Forward {
-    pub fn from_headers(headers: &HeaderMap) -> Self {
+    pub fn new(headers: &HeaderMap, log: CallLog) -> Self {
         Forward {
             authorization: headers.get(header::AUTHORIZATION).cloned(),
             request_id: headers.get(REQUEST_ID).cloned(),
+            log,
         }
+    }
+}
+
+/// 一個 client request 對後端的每次呼叫與結果，由 access log 輸出。
+#[derive(Clone, Default)]
+pub struct CallLog(Arc<Mutex<CallLogInner>>);
+
+#[derive(Default)]
+struct CallLogInner {
+    items: Option<usize>,
+    attempts: Vec<(String, String)>,
+    fallback: bool,
+}
+
+impl CallLog {
+    pub fn set_items(&self, n: usize) {
+        self.0.lock().unwrap().items = Some(n);
+    }
+
+    fn record(&self, backend: &Backend, outcome: String) {
+        let mut inner = self.0.lock().unwrap();
+        inner.fallback |= backend.fallback;
+        inner.attempts.push((backend.url.clone(), outcome));
+    }
+
+    /// 改寫該後端最近一次呼叫的結果（2xx 但回應無法解析）。
+    fn amend(&self, backend: &Backend, outcome: String) {
+        let mut inner = self.0.lock().unwrap();
+        if let Some(a) = inner.attempts.iter_mut().rev().find(|(url, _)| *url == backend.url) {
+            a.1 = outcome;
+        }
+    }
+
+    /// (筆數, 「後端 結果」以逗號串接, 是否用到 fallback)
+    pub fn summary(&self) -> (Option<usize>, String, bool) {
+        let inner = self.0.lock().unwrap();
+        let attempts = inner.attempts.iter().map(|(url, outcome)| format!("{url} {outcome}")).collect::<Vec<_>>().join(", ");
+        (inner.items, attempts, inner.fallback)
     }
 }
 
@@ -134,6 +175,7 @@ impl GatewayError {
 }
 
 pub struct Buffered {
+    pub status: StatusCode,
     pub content_type: Option<HeaderValue>,
     pub body: Bytes,
 }
@@ -165,7 +207,7 @@ pub async fn call_once(svc: &ServicePool, idx: usize, path: &str, body: Bytes, f
         let content_type = resp.headers().get(header::CONTENT_TYPE).cloned();
         let body = resp.bytes().await.map_err(|e| classify(&e))?;
         if status.is_success() {
-            Ok(Buffered { content_type, body })
+            Ok(Buffered { status, content_type, body })
         } else {
             Err(CallError::Status { status, content_type, body })
         }
@@ -175,6 +217,12 @@ pub async fn call_once(svc: &ServicePool, idx: usize, path: &str, body: Bytes, f
         Err(e) if e.is_backend_failure() => backend.record_failure(&svc.tuning, &e.reason()),
         _ => backend.record_success(),
     }
+    let outcome = match &result {
+        Ok(buf) => buf.status.as_u16().to_string(),
+        Err(CallError::Status { status, .. }) => status.as_u16().to_string(),
+        Err(e) => e.reason(),
+    };
+    fwd.log.record(backend, outcome);
     result
 }
 
@@ -199,6 +247,7 @@ pub async fn call_with_retry<T>(
                 Err(e) => {
                     let err = CallError::Invalid(e);
                     svc.backends[idx].record_failure(&svc.tuning, &err.reason());
+                    fwd.log.amend(&svc.backends[idx], err.reason());
                     err
                 }
             },
@@ -237,6 +286,7 @@ pub async fn forward_streaming(svc: &ServicePool, path: &str, body: Bytes, fwd: 
         match request(svc, idx, path, body.clone(), fwd).send().await {
             Ok(resp) => {
                 let status = resp.status();
+                fwd.log.record(backend, status.as_u16().to_string());
                 if status.is_server_error() {
                     backend.record_failure(&svc.tuning, &format!("HTTP {}", status.as_u16()));
                 } else {
@@ -258,6 +308,7 @@ pub async fn forward_streaming(svc: &ServicePool, path: &str, body: Bytes, fwd: 
             Err(e) => {
                 let err = classify(&e);
                 backend.record_failure(&svc.tuning, &err.reason());
+                fwd.log.record(backend, err.reason());
                 if !matches!(err, CallError::Connect(_)) {
                     return Err(err.into());
                 }

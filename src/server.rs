@@ -4,11 +4,11 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
 use axum::Router;
-use axum::extract::{DefaultBodyLimit, Request, State};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Request, State};
 use axum::http::{HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -21,7 +21,7 @@ use tokio::sync::{Mutex, watch};
 use crate::backend::Pool;
 use crate::config::{self, ServerConfig, ServiceKind};
 use crate::probe::{LoadReport, build_pool};
-use crate::upstream::REQUEST_ID;
+use crate::upstream::{CallLog, REQUEST_ID};
 use crate::{admin, api, control};
 
 pub struct App {
@@ -76,13 +76,15 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/v1/systemone", post(api::decision))
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
-        .layer(middleware::from_fn(request_id))
+        .layer(middleware::from_fn(access))
         .layer(DefaultBodyLimit::max(app.boot_server.max_body_bytes))
         .with_state(app)
 }
 
 /// 沿用 client 的 `x-request-id`，沒有則產生；轉送給後端並回在回應上。
-async fn request_id(mut req: Request, next: Next) -> Response {
+/// 每個 request（健康檢查除外）寫一行 access log（target `access`），含呼叫過的後端與結果。
+async fn access(mut req: Request, next: Next) -> Response {
+    let started = Instant::now();
     let id = match req.headers().get(REQUEST_ID) {
         Some(v) => v.clone(),
         None => {
@@ -91,7 +93,31 @@ async fn request_id(mut req: Request, next: Next) -> Response {
             v
         }
     };
+    let method = req.method().clone();
+    let path = req.uri().path().to_string();
+    let client = req.extensions().get::<ConnectInfo<SocketAddr>>().map(|c| c.0.ip().to_string());
+    let log = CallLog::default();
+    req.extensions_mut().insert(log.clone());
+
     let mut resp = next.run(req).await;
+
+    if path != "/healthz" && path != "/readyz" {
+        let (items, backends, fallback) = log.summary();
+        // decision 以串流回傳，duration 是收到後端回應 header 的時間
+        tracing::info!(
+            target: "access",
+            request_id = id.to_str().unwrap_or(""),
+            client = client.as_deref().unwrap_or(""),
+            method = %method,
+            path,
+            status = resp.status().as_u16(),
+            duration_ms = started.elapsed().as_secs_f64() * 1000.0,
+            items,
+            backends,
+            fallback,
+            "request"
+        );
+    }
     resp.headers_mut().insert(REQUEST_ID, id);
     resp
 }
@@ -155,7 +181,9 @@ pub async fn serve(config_path: PathBuf) -> anyhow::Result<()> {
         tokio::spawn(async move { admin.await });
     }
     let main = tokio::spawn(
-        axum::serve(listener, router(app.clone())).with_graceful_shutdown(wait_shutdown(shutdown_rx.clone())).into_future(),
+        axum::serve(listener, router(app.clone()).into_make_service_with_connect_info::<SocketAddr>())
+            .with_graceful_shutdown(wait_shutdown(shutdown_rx.clone()))
+            .into_future(),
     );
 
     wait_shutdown(shutdown_rx).await;

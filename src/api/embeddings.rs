@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use axum::Extension;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::Response;
@@ -14,7 +15,7 @@ use serde_json::value::RawValue;
 use super::{Chunk, json_response, parse_object, passthrough, plan_chunks, sum_numbers};
 use crate::backend::ServicePool;
 use crate::server::App;
-use crate::upstream::{Flavor, Forward, GatewayError, call_with_retry};
+use crate::upstream::{CallLog, Flavor, Forward, GatewayError, call_with_retry};
 
 const PATH: &str = "/v1/embeddings";
 
@@ -95,15 +96,16 @@ pub fn merge(parts: Vec<(Chunk, EmbeddingResponse)>) -> MergedEmbeddings {
     MergedEmbeddings { rest, data }
 }
 
-pub async fn handle(State(app): State<Arc<App>>, headers: HeaderMap, body: Bytes) -> Response {
+pub async fn handle(State(app): State<Arc<App>>, Extension(log): Extension<CallLog>, headers: HeaderMap, body: Bytes) -> Response {
     let pool = app.pool.load_full();
-    embeddings(&pool.embedding, &headers, body).await.unwrap_or_else(|e| e.into_response(Flavor::OpenAi))
+    let fwd = Forward::new(&headers, log);
+    embeddings(&pool.embedding, fwd, body).await.unwrap_or_else(|e| e.into_response(Flavor::OpenAi))
 }
 
-async fn embeddings(svc: &ServicePool, headers: &HeaderMap, body: Bytes) -> Result<Response, GatewayError> {
-    let fwd = Forward::from_headers(headers);
+async fn embeddings(svc: &ServicePool, fwd: Forward, body: Bytes) -> Result<Response, GatewayError> {
     let mut req = parse_object(&body)?;
     let n = splittable_inputs(req.get("input")).map_or(1, Vec::len);
+    fwd.log.set_items(n);
     let chunks = plan_chunks(svc, n)?;
     if chunks.len() == 1 {
         let buf = call_with_retry(svc, chunks[0].backend, PATH, body, &fwd, true, Ok).await?;

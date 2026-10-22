@@ -22,7 +22,7 @@ client ───▶ │ axum router ─▶ handler ─▶ splitter ─▶ Backen
 - Runtime：`tokio` + `axum`（server）+ `reqwest`（HTTP client，keep-alive 連線池）
 - 設定：`serde_yaml` 讀取 `config.yaml`
 - 後端池：`arc-swap` 保存目前的 `Arc<BackendPool>`，reload 時原子替換
-- 日誌：`tracing`，JSON 格式輸出
+- 日誌：`tracing`，JSON 格式輸出到 stdout；每個 request 一行 access log（見 §9.1）
 
 ---
 
@@ -439,3 +439,26 @@ decision   (no change)
 - **Body 大小上限**：預設 32 MB，可設定。
 - **可觀測性**：`/metrics`（Prometheus 格式，管理埠）— 各 service/backend 的請求數、錯誤數、延遲分佈、in-flight 數。
 - **效能目標**：gateway 自身額外延遲 p99 < 1 ms（不含後端時間）；JSON 合併時只解析需要改寫的欄位（`index`、`usage`），`embedding` 向量以 `serde_json::value::RawValue` 原樣搬移，不做浮點數重新解析與序列化。
+
+### 9.1 Access log
+
+每個 request（`/healthz`、`/readyz` 除外）在回應時寫一行 `INFO` 日誌，`target` 為 `access`、`message` 為 `request`，欄位：
+
+| 欄位 | 說明 |
+|------|------|
+| `request_id` | `x-request-id`（client 帶的或 gateway 產生的） |
+| `client` | client IP |
+| `method`、`path`、`status` | 回給 client 的狀態碼 |
+| `duration_ms` | gateway 收到 request 到送出回應 header 的時間；decision 以串流回傳，不含 body 傳輸 |
+| `items` | embedding 的 input 筆數、rerank 的 documents 筆數；decision 沒有此欄位 |
+| `backends` | 依序列出每次後端呼叫與結果，例如 `http://a:1 500, http://b:1 200`；結果為狀態碼或錯誤原因（`timeout`、`connect failed: ...`、`invalid response: ...`）。沒呼叫後端（例如 400、503）時為空字串 |
+| `fallback` | 是否呼叫過 fallback 後端 |
+
+範例：
+
+```json
+{"timestamp":"2026-01-01T00:00:00Z","level":"INFO","fields":{"message":"request","request_id":"f9fb90d9-...","client":"192.0.2.10","method":"POST","path":"/v1/embeddings","status":200,"duration_ms":1.02,"items":1,"backends":"http://127.0.0.1:12352 500, http://127.0.0.1:12351 500, http://127.0.0.1:12359 200","fallback":true},"target":"access"}
+```
+
+不想要 access log 時可設 `RUST_LOG=info,access=off`。
+

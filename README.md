@@ -53,6 +53,15 @@ uv run pytest -q              # 對照 vLLM 後端驗證，並實際呼叫 Coher
 
 Gateway 啟動或 reload 時，fallback 必須已在執行，否則探測失敗會被停用，要等下次 `reload` 才會重新探測。
 
+## 日誌
+
+Gateway 以 JSON 格式輸出到 stdout，沒有寫入檔案；需要保存時請自行導向檔案或交給 systemd / journald。每個 request 會寫一行 access log（`"target":"access"`），包含狀態碼、耗時、呼叫過的後端與結果，以及是否用到 fallback，欄位見 SPEC §9.1。
+
+```bash
+./target/release/ai-gateway serve | jq -c 'select(.target == "access") | .fields'   # 只看 access log
+RUST_LOG=info,access=off ./target/release/ai-gateway serve                            # 關閉 access log
+```
+
 ## 端點
 
 | Method | Path | 說明 |

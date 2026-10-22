@@ -5,6 +5,7 @@ pub mod rerank;
 
 use std::sync::Arc;
 
+use axum::Extension;
 use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::Response;
@@ -13,7 +14,7 @@ use serde_json::Value;
 
 use crate::backend::{ServicePool, split_sizes};
 use crate::server::App;
-use crate::upstream::{Buffered, Flavor, Forward, GatewayError, forward_streaming};
+use crate::upstream::{Buffered, CallLog, Flavor, Forward, GatewayError, forward_streaming};
 
 /// 拆分後的一份：送往哪個後端、對應原始陣列的哪一段。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,9 +91,9 @@ pub fn parse_object(body: &[u8]) -> Result<serde_json::Map<String, Value>, Gatew
 }
 
 /// `POST /v1/systemone`：整包轉發到單一後端（SPEC §6）。
-pub async fn decision(State(app): State<Arc<App>>, headers: HeaderMap, body: Bytes) -> Response {
+pub async fn decision(State(app): State<Arc<App>>, Extension(log): Extension<CallLog>, headers: HeaderMap, body: Bytes) -> Response {
     let pool = app.pool.load_full();
-    let fwd = Forward::from_headers(&headers);
+    let fwd = Forward::new(&headers, log);
     forward_streaming(&pool.decision, "/v1/systemone", body, &fwd)
         .await
         .unwrap_or_else(|e| e.into_response(Flavor::Plain))

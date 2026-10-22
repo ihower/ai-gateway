@@ -150,6 +150,7 @@ struct Gateway {
 }
 
 async fn start_gateway(yaml: impl FnOnce(&std::path::Path) -> String) -> (Gateway, ai_gateway::probe::LoadReport) {
+    logs();
     let dir = tempfile::tempdir().unwrap();
     let config_path = dir.path().join("config.yaml");
     std::fs::write(&config_path, yaml(dir.path())).unwrap();
@@ -159,6 +160,7 @@ async fn start_gateway(yaml: impl FnOnce(&std::path::Path) -> String) -> (Gatewa
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let r = router(app.clone());
+    let r = r.into_make_service_with_connect_info::<std::net::SocketAddr>();
     tokio::spawn(async move { axum::serve(listener, r).await.unwrap() });
     (Gateway { url, app, config_path, _dir: dir }, report)
 }
@@ -489,4 +491,88 @@ async fn decision_falls_back_when_backends_unavailable() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(choice(&out), "9");
     assert_eq!(mf.hits.load(Ordering::Relaxed), 1);
+}
+
+/// 收集 tracing 輸出（JSON），供檢查 access log。
+#[derive(Clone, Default)]
+struct LogBuf(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for LogBuf {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// 全域 subscriber 在第一個 gateway 啟動前裝好（scoped subscriber 收不到其他測試已快取的 callsite）。
+fn logs() -> &'static LogBuf {
+    static LOGS: std::sync::OnceLock<LogBuf> = std::sync::OnceLock::new();
+    LOGS.get_or_init(|| {
+        let buf = LogBuf::default();
+        let writer = buf.clone();
+        tracing_subscriber::fmt().json().with_writer(move || writer.clone()).init();
+        buf
+    })
+}
+
+/// 並行的測試共用同一份 log，以 request id 篩選。
+fn access_line(request_id: &str) -> Value {
+    let text = String::from_utf8(logs().0.lock().unwrap().clone()).unwrap();
+    let lines: Vec<Value> = text
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .filter(|v| v["target"] == "access" && v["fields"]["request_id"] == request_id)
+        .collect();
+    assert_eq!(lines.len(), 1, "{request_id}: {lines:?}");
+    lines[0]["fields"].clone()
+}
+
+#[tokio::test]
+async fn access_log_records_each_request_with_backends() {
+    let (u1, m1) = spawn_mock(1).await;
+    let (u2, m2) = spawn_mock(2).await;
+    let (fb, _mf) = spawn_mock(9).await;
+    let (gw, _) = start_gateway(|d| with_fallback(config_yaml(d, &[&u1, &u2], &[&u1], &[&u1]), &fb)).await;
+    let send = |path: &str, id: &str, body: Value| {
+        reqwest::Client::new().post(format!("{}{path}", gw.url)).header("x-request-id", id).json(&body).send()
+    };
+
+    let resp = send("/v1/embeddings", "log-ok", json!({"input": ["a", "b", "c"]})).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let health = reqwest::Client::new().get(format!("{}/healthz", gw.url)).header("x-request-id", "log-health");
+    health.send().await.unwrap();
+    m1.mode.store(FAIL, Ordering::Relaxed);
+    m2.mode.store(FAIL, Ordering::Relaxed);
+    let resp = send("/v1/embeddings", "log-fallback", json!({"input": "x"})).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let resp = send("/v1/systemone", "log-decision", json!({"state": "s", "questions": {}})).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+    let f = access_line("log-ok");
+    assert_eq!(f["client"], "127.0.0.1");
+    assert_eq!((f["method"].as_str(), f["path"].as_str(), f["status"].as_u64()), (Some("POST"), Some("/v1/embeddings"), Some(200)));
+    assert_eq!(f["items"], 3);
+    assert_eq!(f["fallback"], false);
+    let backends = f["backends"].as_str().unwrap();
+    assert!(backends.contains(&format!("{u1} 200")) && backends.contains(&format!("{u2} 200")), "{backends}");
+    assert!(f["duration_ms"].as_f64().unwrap() >= 0.0);
+
+    // 兩台都失敗後改送 fallback：依序記錄每次嘗試
+    let f = access_line("log-fallback");
+    assert_eq!(f["fallback"], true);
+    let backends = f["backends"].as_str().unwrap();
+    assert!(backends.ends_with(&format!("{fb} 200")), "{backends}");
+    assert_eq!(backends.matches(" 500").count(), 2, "{backends}");
+
+    let f = access_line("log-decision");
+    assert_eq!(f["status"], 500);
+    assert_eq!(f["backends"], format!("{u1} 500"));
+    assert!(f.get("items").is_none());
+
+    // 健康檢查不記錄
+    let text = String::from_utf8(logs().0.lock().unwrap().clone()).unwrap();
+    assert!(!text.contains("log-health"));
 }
