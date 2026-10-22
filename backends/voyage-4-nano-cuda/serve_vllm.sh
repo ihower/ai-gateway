@@ -28,8 +28,8 @@ exec uv run vllm serve voyageai/voyage-4-nano \
   --hf-overrides '{"architectures":["VoyageQwen3BidirectionalEmbedModel"]}' \
   --pooler-config '{"pooling_type":"MEAN"}' \
   --trust-remote-code --dtype bfloat16 --enforce-eager \
-  --max-model-len "${MAX_MODEL_LEN:-32768}" \
-  --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION:-0.3}" \
+  --max-model-len "${MAX_MODEL_LEN:-8192}" \
+  --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION:-0.15}" \
   --api-server-count "${API_SERVER_COUNT:-1}" \
   --middleware prompt_middleware.VoyagePromptMiddleware \
   --host "${HOST:-0.0.0.0}" --port "${PORT:-12351}" \

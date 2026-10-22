@@ -40,8 +40,8 @@ uv sync
 |---|---|---|
 | `HOST` | `0.0.0.0` | 監聽位址 |
 | `PORT` | `12351` | 監聽 port |
-| `GPU_MEMORY_UTILIZATION` | `0.3` | vLLM 可使用的 GPU 記憶體比例 |
-| `MAX_MODEL_LEN` | `32768` | 單筆輸入的 token 上限 |
+| `GPU_MEMORY_UTILIZATION` | `0.15` | vLLM 可使用的 GPU 記憶體比例 |
+| `MAX_MODEL_LEN` | `8192` | 單筆輸入的 token 上限 |
 | `API_SERVER_COUNT` | `1` | API server process 數；高併發時 CPU 不夠可以調高 |
 | `DEFAULT_INPUT_TYPE` | `document` | 請求沒帶 `input_type` 時用的值 |
 | `VLLM_PROCESS_NAME_PREFIX` | `voyage-4-nano` | `ps` 顯示的 process 名稱前綴，例如 `voyage-4-nano::EngineCore` |
