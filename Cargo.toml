@@ -24,3 +24,7 @@ uuid = { version = "1.28.0", features = ["v4"] }
 [dev-dependencies]
 base64 = "0.23.1"
 tempfile = "3.27.0"
+
+[profile.release]
+# 根目錄的 ai-gateway binary 會進 git，去掉除錯符號以縮小體積
+strip = true

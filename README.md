@@ -10,23 +10,25 @@
 ## 建置
 
 ```bash
-cargo build --release
+./build.sh    # cargo build --release，並複製到根目錄的 ./ai-gateway
 ```
+
+根目錄的 `ai-gateway` binary 會 commit 進 git，部署端 `git pull` 後即可直接執行，不需要 Rust（x86-64、glibc ≥ 2.34）。修改 Rust 程式碼後，commit 前請先執行 `./build.sh`，讓 binary 與程式碼一致。
 
 ## 使用
 
 ```bash
 # 啟動（預設讀 ./config.yaml，可用 --config 或 AI_GATEWAY_CONFIG 指定）
-./target/release/ai-gateway serve
+./ai-gateway serve
 
 # 修改 config.yaml 後熱重載，印出後端增減與被停用的後端
-./target/release/ai-gateway reload
+./ai-gateway reload
 
 # reload 前先檢查設定檔並探測後端，不影響執行中的 gateway
-./target/release/ai-gateway check
+./ai-gateway check
 
 # 查看目前各後端狀態
-./target/release/ai-gateway status
+./ai-gateway status
 ```
 
 `reload` / `status` 的 exit code：`0` 成功；`1` 設定錯誤或 reload 失敗（舊設定保留）；`2` 連不到執行中的 gateway。
@@ -58,8 +60,8 @@ Gateway 啟動或 reload 時，fallback 必須已在執行，否則探測失敗�
 Gateway 以 JSON 格式輸出到 stdout，沒有寫入檔案；需要保存時請自行導向檔案或交給 systemd / journald。每個 request 會寫一行 access log（`"target":"access"`），包含狀態碼、耗時、呼叫過的後端與結果，以及是否用到 fallback，欄位見 SPEC §9.1。
 
 ```bash
-./target/release/ai-gateway serve | jq -c 'select(.target == "access") | .fields'   # 只看 access log
-RUST_LOG=info,access=off ./target/release/ai-gateway serve                            # 關閉 access log
+./ai-gateway serve | jq -c 'select(.target == "access") | .fields'   # 只看 access log
+RUST_LOG=info,access=off ./ai-gateway serve              # 關閉 access log
 ```
 
 ## 端點
@@ -71,6 +73,10 @@ RUST_LOG=info,access=off ./target/release/ai-gateway serve                      
 | POST | `/v1/systemone` | Decision（Jev / SystemOne 格式） |
 | GET | `/healthz`、`/readyz` | 健康檢查 |
 | GET | `/admin/backends`、`/admin/config`、`/metrics` | 管理埠（唯讀） |
+
+## 部署
+
+部署到另一台 Linux server（systemd、設定檔放置、更新流程）見 [docs/deploy.md](docs/deploy.md)。
 
 ## 測試
 
