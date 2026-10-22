@@ -107,7 +107,7 @@ pub struct ServiceConfig {
     pub tuning: Tuning,
     pub probe_model: Option<String>,
     pub backends: Vec<BackendConfig>,
-    /// 所有 `backends` 都失效時才使用的後端（目前只支援 embedding）。
+    /// 所有 `backends` 都失效時才使用的後端（SPEC §8.6）。
     pub fallback: Option<FallbackConfig>,
 }
 
@@ -235,7 +235,6 @@ impl RawService {
             backends.push(BackendConfig { url, weight: b.weight });
         }
         let fallback = match self.fallback {
-            Some(_) if kind != ServiceKind::Embedding => bail!("services.{kind}.fallback is only supported for embedding"),
             Some(f) => {
                 let url = normalize_url(&f.url).with_context(|| format!("services.{kind}.fallback: invalid url {:?}", f.url))?;
                 if backends.iter().any(|b| b.url == url) {
@@ -365,6 +364,6 @@ services:
         let dup_fallback = SAMPLE.replace("        weight: 3\n", "        weight: 3\n    fallback: {url: \"http://10.0.0.1:1\"}\n");
         assert!(parse(&dup_fallback, Path::new("c.yaml")).unwrap_err().to_string().contains("also listed"));
         let rerank_fallback = SAMPLE.replace("    request_timeout_ms: 5000\n", "    request_timeout_ms: 5000\n    fallback: {url: \"http://10.0.0.9:1\"}\n");
-        assert!(parse(&rerank_fallback, Path::new("c.yaml")).unwrap_err().to_string().contains("only supported for embedding"));
+        assert_eq!(parse(&rerank_fallback, Path::new("c.yaml")).unwrap().reranker.fallback.unwrap().url, "http://10.0.0.9:1");
     }
 }

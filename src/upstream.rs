@@ -49,7 +49,7 @@ impl CallError {
         }
     }
 
-    fn reason(&self) -> String {
+    pub fn reason(&self) -> String {
         match self {
             CallError::Connect(e) => format!("connect failed: {e}"),
             CallError::Timeout => "timeout".to_string(),
@@ -179,7 +179,7 @@ pub async fn call_once(svc: &ServicePool, idx: usize, path: &str, body: Bytes, f
 }
 
 /// 送出並在後端失敗時改送其他後端，最多 `max_retries` 次（embedding / rerank 為冪等運算）；
-/// 一般後端都失敗後，若有 fallback 再送一次（不計入 `max_retries`）。
+/// `use_fallback` 時，一般後端都失敗後若有 fallback 再送一次（不計入 `max_retries`）。
 /// `parse` 檢查 2xx 回應；檢查失敗視同後端失敗。
 pub async fn call_with_retry<T>(
     svc: &ServicePool,
@@ -187,6 +187,7 @@ pub async fn call_with_retry<T>(
     path: &str,
     body: Bytes,
     fwd: &Forward,
+    use_fallback: bool,
     parse: impl Fn(Buffered) -> Result<T, String>,
 ) -> Result<T, CallError> {
     let mut tried = vec![first];
@@ -207,7 +208,7 @@ pub async fn call_with_retry<T>(
             return Err(err);
         }
         let retry = if tried.len() <= svc.tuning.max_retries as usize { svc.pick(1, &tried).first().copied() } else { None };
-        match retry.or_else(|| svc.fallback().filter(|f| !tried.contains(f))) {
+        match retry.or_else(|| svc.fallback().filter(|f| use_fallback && !tried.contains(f))) {
             Some(next) => {
                 let msg = if svc.backends[next].fallback { "falling back" } else { "retrying on another backend" };
                 tracing::warn!(service = %svc.kind, backend = %svc.backends[idx].url, retry_to = %svc.backends[next].url,
@@ -220,12 +221,14 @@ pub async fn call_with_retry<T>(
     }
 }
 
-/// 透明轉發並以串流回傳 body；只在連線建立失敗時改送其他後端（decision 不保證冪等）。
+/// 透明轉發並以串流回傳 body；只在連線建立失敗時改送其他後端（decision 不保證冪等），
+/// 一般後端都連不上（或都不可用）時改送 fallback。
 pub async fn forward_streaming(svc: &ServicePool, path: &str, body: Bytes, fwd: &Forward) -> Result<Response, GatewayError> {
     let mut tried = Vec::new();
     let mut last_err: Option<CallError> = None;
     loop {
-        let Some(&idx) = svc.pick(1, &tried).first() else {
+        let retry = if tried.len() <= svc.tuning.max_retries as usize { svc.pick(1, &tried).first().copied() } else { None };
+        let Some(idx) = retry.or_else(|| svc.fallback().filter(|f| !tried.contains(f))) else {
             return Err(last_err.map(GatewayError::from).unwrap_or(GatewayError::NoBackend));
         };
         tried.push(idx);
@@ -255,8 +258,7 @@ pub async fn forward_streaming(svc: &ServicePool, path: &str, body: Bytes, fwd: 
             Err(e) => {
                 let err = classify(&e);
                 backend.record_failure(&svc.tuning, &err.reason());
-                let retry = matches!(err, CallError::Connect(_)) && tried.len() <= svc.tuning.max_retries as usize;
-                if !retry {
+                if !matches!(err, CallError::Connect(_)) {
                     return Err(err.into());
                 }
                 tracing::warn!(service = %svc.kind, backend = %backend.url, reason = %err.reason(), "connect failed, retrying");

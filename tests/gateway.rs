@@ -348,7 +348,30 @@ async fn reload_swaps_backends_and_lets_inflight_requests_finish() {
 }
 
 fn with_fallback(yaml: String, url: &str) -> String {
-    yaml.replacen("  reranker:\n", &format!("    fallback:\n      url: \"{url}\"\n      request_timeout_ms: 8000\n  reranker:\n"), 1)
+    with_fallback_on(yaml, "embedding", url)
+}
+
+/// 在 `service` 區塊末尾（下一個 service 標題之前）加上 fallback。
+fn with_fallback_on(yaml: String, service: &str, url: &str) -> String {
+    let block = format!("    fallback:\n      url: \"{url}\"\n      request_timeout_ms: 8000\n");
+    let mut out = String::new();
+    let mut inside = false;
+    for line in yaml.lines() {
+        let is_header = line.starts_with("  ") && !line.starts_with("   ") && line.ends_with(':');
+        if inside && is_header {
+            out.push_str(&block);
+            inside = false;
+        }
+        if is_header && line.trim() == format!("{service}:") {
+            inside = true;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    if inside {
+        out.push_str(&block);
+    }
+    out
 }
 
 #[tokio::test]
@@ -411,5 +434,59 @@ async fn fallback_serves_when_all_backends_disabled_at_startup() {
     let (status, body) = post_json(&format!("{}/v1/embeddings", gw.url), json!({"input": ["a", "b"]})).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"][1]["embedding"], json!([1.0, 9.0]));
+    assert_eq!(mf.hits.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn rerank_falls_back_with_whole_request() {
+    let (u1, m1) = spawn_mock(1).await;
+    let (u2, m2) = spawn_mock(2).await;
+    let (fb, mf) = spawn_mock(9).await;
+    let (gw, _) = start_gateway(|d| with_fallback_on(config_yaml(d, &[&u1], &[&u1, &u2], &[&u1]), "reranker", &fb)).await;
+    assert!(gw.app.pool.load().embedding.fallback().is_none());
+    let url = format!("{}/v1/rerank", gw.url);
+    let body = json!({"query": "q", "documents": ["aaa", "a", "aaaaa", "aa"], "top_n": 2});
+
+    let (status, out) = post_json(&url, body.clone()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_ne!(out["id"], json!("mock-9"));
+    assert_eq!(mf.hits.load(Ordering::Relaxed), 0);
+
+    // 拆分後一份在兩台都失敗：不只補那一份，而是整個 request 改送 fallback（分數尺度不同，不能混排）
+    m1.mode.store(FAIL, Ordering::Relaxed);
+    m2.mode.store(FAIL, Ordering::Relaxed);
+    let (status, out) = post_json(&url, body.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+    assert_eq!(out["id"], json!("mock-9"), "fallback response passed through unmerged");
+    let idx: Vec<u64> = out["results"].as_array().unwrap().iter().map(|r| r["index"].as_u64().unwrap()).collect();
+    assert_eq!(idx, vec![2, 0]);
+    assert_eq!(mf.hits.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn decision_falls_back_when_backends_unavailable() {
+    let (u1, m1) = spawn_mock(1).await;
+    let (fb, mf) = spawn_mock(9).await;
+    let dead = dead_url().await;
+    let (gw, report) = start_gateway(|d| with_fallback_on(config_yaml(d, &[&u1], &[&u1], &[&u1, &dead]), "decision", &fb)).await;
+    assert_eq!(report.disabled.len(), 1);
+    let url = format!("{}/v1/systemone", gw.url);
+    let body = json!({"state": "s", "questions": {"q": {"type": "noul", "instructions": "?"}}});
+    let choice = |v: &Value| v["answers"]["backend"]["choice"].as_str().unwrap().to_string();
+
+    let (_, out) = post_json(&url, body.clone()).await;
+    assert_eq!(choice(&out), "1");
+
+    // 5xx 不重試、不改送（decision 不保證冪等），原樣回傳；連續失敗後標記 unhealthy
+    m1.mode.store(FAIL, Ordering::Relaxed);
+    for _ in 0..3 {
+        let resp = reqwest::Client::new().post(&url).json(&body).send().await.unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+    assert_eq!(mf.hits.load(Ordering::Relaxed), 0);
+    // 唯一啟用的後端 unhealthy → 改送 fallback
+    let (status, out) = post_json(&url, body.clone()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(choice(&out), "9");
     assert_eq!(mf.hits.load(Ordering::Relaxed), 1);
 }

@@ -1,11 +1,14 @@
-"""voyage-4-nano 的 CPU fallback embedding server（OpenAI `/v1/embeddings` 格式）。
+"""ai-gateway 的 fallback server：各 service 的主要後端全部失效時，由 gateway 改送到這裡。
 
-主要 embedding 後端（vLLM）全部失效時，由 ai-gateway 改送到這裡。
-行為與 vLLM 後端對齊：
-- `input_type` 未指定時套用 document prompt；`query` 套用 query prompt；`none` 不加 prompt（可送 token ids）
-- `dimensions` 只接受 256 / 512 / 1024 / 2048（Matryoshka），截斷後重新正規化
-- `encoding_format` 支援 `float` 與 `base64`（little-endian float32）
-- `usage.prompt_tokens` 含 prompt 前綴的 token 數
+- `POST /v1/embeddings`：CPU 跑 voyage-4-nano（Sentence Transformers），行為與 vLLM 後端對齊：
+  - `input_type` 未指定時套用 document prompt；`query` 套用 query prompt；`none` 不加 prompt（可送 token ids）
+  - `dimensions` 只接受 256 / 512 / 1024 / 2048（Matryoshka），截斷後重新正規化
+  - `encoding_format` 支援 `float` 與 `base64`（little-endian float32）
+  - `usage.prompt_tokens` 含 prompt 前綴的 token 數
+- `POST /v1/rerank`、`/v2/rerank`：轉送 Cohere Rerank API（`rerank-v4.0-fast`），回應改成 vLLM 的形狀
+- `POST /v1/systemone`：轉送 TypeSafe 的 Jev API（SystemOne 格式，`jev-1.14.0`）
+
+雲端 API 的 key 讀自同目錄的 `.env`（`COHERE_API_KEY`、`JEV_API_KEY`）；client 帶的 Authorization 不會轉送。
 
 用法：uv run server.py [--host 127.0.0.1] [--port 12359]
 """
@@ -16,13 +19,20 @@ import os
 import threading
 import time
 import uuid
+from contextlib import asynccontextmanager
+from pathlib import Path
 
+import httpx
 import numpy as np
 import torch
 import uvicorn
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from dotenv import load_dotenv
+from fastapi.responses import JSONResponse, Response
 from sentence_transformers import SentenceTransformer
+
+# .env 的值優先於已存在的環境變數
+load_dotenv(Path(__file__).parent / ".env", override=True)
 
 MODEL_ID = os.environ.get("FALLBACK_MODEL_ID", "voyageai/voyage-4-nano")
 SERVED_NAME = os.environ.get("FALLBACK_SERVED_NAME", "voyage-4-nano")
@@ -31,11 +41,28 @@ DTYPE = {"bf16": torch.bfloat16, "fp32": torch.float32}[os.environ.get("FALLBACK
 DIMENSIONS = [256, 512, 1024, 2048]
 INPUT_TYPES = ["query", "document", "none"]
 
+COHERE_URL = os.environ.get("COHERE_RERANK_URL", "https://api.cohere.com/v2/rerank")
+COHERE_MODEL = os.environ.get("COHERE_RERANK_MODEL", "rerank-v4.0-fast")
+JEV_URL = os.environ.get("JEV_URL", "https://api.typesafe.ai/v1/systemone")
+JEV_MODEL = os.environ.get("JEV_MODEL", "jev-1.14.0")
+UPSTREAM_TIMEOUT = float(os.environ.get("FALLBACK_UPSTREAM_TIMEOUT", "60"))
+
 model = SentenceTransformer(MODEL_ID, trust_remote_code=True, device="cpu", model_kwargs={"dtype": DTYPE})
 tokenizer = model.tokenizer
 # torch 本身已用多執行緒推論，一次只跑一個 request 避免互搶 CPU
 lock = threading.Lock()
-app = FastAPI()
+http: httpx.AsyncClient
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    global http
+    async with httpx.AsyncClient(timeout=UPSTREAM_TIMEOUT) as client:
+        http = client
+        yield
+
+
+app = FastAPI(lifespan=lifespan)
 
 
 class ApiError(Exception):
@@ -129,6 +156,59 @@ def embeddings(body: dict):
         "data": [{"index": i, "object": "embedding", "embedding": encode(v)} for i, v in enumerate(vectors)],
         "usage": {"prompt_tokens": tokens, "total_tokens": tokens, "completion_tokens": 0, "prompt_tokens_details": None},
     }
+
+
+async def call_upstream(name: str, url: str, key_env: str, payload: dict) -> httpx.Response:
+    """呼叫雲端 API。4xx 原樣交給呼叫端；連不上、逾時、5xx 轉成 502 / 504，讓 gateway 視為後端失敗。"""
+    key = os.environ.get(key_env)
+    if not key:
+        raise ApiError(503, f"{key_env} is not set", "ServiceUnavailableError")
+    try:
+        resp = await http.post(url, json=payload, headers={"Authorization": f"Bearer {key}"})
+    except httpx.TimeoutException:
+        raise ApiError(504, f"{name} timed out", "UpstreamError")
+    except httpx.HTTPError as e:
+        raise ApiError(502, f"{name} request failed: {e}", "UpstreamError")
+    if resp.status_code >= 500:
+        raise ApiError(502, f"{name} returned HTTP {resp.status_code}", "UpstreamError")
+    return resp
+
+
+def passthrough(resp: httpx.Response) -> Response:
+    return Response(resp.content, resp.status_code, media_type=resp.headers.get("content-type", "application/json"))
+
+
+@app.post("/v1/rerank")
+@app.post("/v2/rerank")
+async def rerank(body: dict):
+    """轉送 Cohere v2 rerank。回應與 vLLM 對齊：results 一律帶 `document.text`、`model` 為實際模型；
+    另保留 Cohere 的 `meta`。Cohere 不回 token 數，因此沒有 `usage`。"""
+    documents = body.get("documents")
+    payload = {"model": COHERE_MODEL, "query": body.get("query"), "documents": documents}
+    # 與 vLLM 一致：top_n 為 0 或未指定時回傳全部
+    if body.get("top_n"):
+        payload["top_n"] = body["top_n"]
+    if body.get("max_tokens_per_doc") is not None:
+        payload["max_tokens_per_doc"] = body["max_tokens_per_doc"]
+    resp = await call_upstream("Cohere", COHERE_URL, "COHERE_API_KEY", payload)
+    if resp.status_code != 200:
+        return passthrough(resp)
+    data = resp.json()
+    results = [
+        {"index": r["index"], "document": {"text": documents[r["index"]]}, "relevance_score": r["relevance_score"]}
+        for r in data["results"]
+    ]
+    out = {"id": data.get("id") or f"rerank-{uuid.uuid4().hex[:16]}", "model": COHERE_MODEL, "results": results}
+    if "meta" in data:
+        out["meta"] = data["meta"]
+    return out
+
+
+@app.post("/v1/systemone")
+async def systemone(body: dict):
+    """轉送 Jev（同為 SystemOne 格式）；`model` 一律改為 Jev 的模型，回應原樣傳回。"""
+    resp = await call_upstream("Jev", JEV_URL, "JEV_API_KEY", {**body, "model": JEV_MODEL})
+    return passthrough(resp)
 
 
 @app.get("/v1/models")

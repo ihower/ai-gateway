@@ -12,7 +12,7 @@ use serde_json::{Map, Value};
 use super::{Chunk, json_response, parse_object, passthrough, plan_chunks, sum_numbers};
 use crate::backend::ServicePool;
 use crate::server::App;
-use crate::upstream::{Flavor, Forward, GatewayError, call_with_retry};
+use crate::upstream::{Flavor, Forward, GatewayError, call_once, call_with_retry};
 
 #[derive(Deserialize)]
 pub struct RerankResponse {
@@ -90,7 +90,7 @@ async fn rerank(svc: &ServicePool, path: &str, headers: &HeaderMap, body: Bytes)
     };
     let chunks = plan_chunks(svc, n)?;
     if chunks.len() == 1 {
-        let buf = call_with_retry(svc, chunks[0].backend, path, body, &fwd, Ok).await?;
+        let buf = call_with_retry(svc, chunks[0].backend, path, body, &fwd, true, Ok).await?;
         return Ok(passthrough(buf));
     }
 
@@ -108,11 +108,24 @@ async fn rerank(svc: &ServicePool, path: &str, headers: &HeaderMap, body: Bytes)
         let fwd = &fwd;
         let chunk = *chunk;
         async move {
-            let part = call_with_retry(svc, chunk.backend, path, sub_body, fwd, |buf| parse_part(&buf.body, chunk.len)).await?;
+            // fallback 可能是不同模型，分數尺度不同，不能與一般後端的分數混排；失敗時整包改送 fallback
+            let part =
+                call_with_retry(svc, chunk.backend, path, sub_body, fwd, false, |buf| parse_part(&buf.body, chunk.len)).await?;
             Ok::<_, GatewayError>((chunk, part))
         }
     });
-    let parts = futures::future::try_join_all(calls).await?;
+    let parts = match futures::future::try_join_all(calls).await {
+        Ok(parts) => parts,
+        Err(GatewayError::Upstream(e)) if e.is_backend_failure() && svc.fallback().is_some() => {
+            let fb = svc.fallback().expect("checked above");
+            tracing::warn!(service = %svc.kind, retry_to = %svc.backends[fb].url, reason = %e.reason(), "falling back with whole request");
+            return match call_once(svc, fb, path, body, &fwd).await {
+                Ok(buf) => Ok(passthrough(buf)),
+                Err(e) => Err(e.into()),
+            };
+        }
+        Err(e) => return Err(e),
+    };
     let out = serde_json::to_vec(&merge(parts, top_n)).expect("serialize merged response");
     Ok(json_response(None, out.into()))
 }

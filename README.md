@@ -33,14 +33,22 @@ cargo build --release
 
 升級 binary 或修改監聽位址時，送 `SIGTERM`：gateway 停止接受新連線，等進行中的 request 完成（最多 `shutdown_timeout_secs`）後結束。
 
-## Embedding CPU fallback
+## Fallback
 
-兩台 embedding 後端都失效時，gateway 會改送 `services.embedding.fallback`（見 SPEC §8.6）。Fallback 是獨立的 Python process，用 Sentence Transformers 在 CPU 上跑 `voyageai/voyage-4-nano`，回應格式、prompt（`input_type`）、`dimensions` 與 `usage` 都與 vLLM 後端一致：
+各 service 的後端都失效時，gateway 會改送該 service 的 `fallback`（見 SPEC §8.6）。Fallback 是獨立的 Python process（`fallback-fastapi/server.py`），三種 service 共用：
+
+| Service | Fallback |
+|---------|----------|
+| embedding | CPU 上以 Sentence Transformers 跑 `voyageai/voyage-4-nano`；回應格式、prompt（`input_type`）、`dimensions` 與 `usage` 都與 vLLM 後端一致 |
+| reranker | 轉送 Cohere `rerank-v4.0-fast`；回應改成 vLLM 的形狀（帶 `document.text`），沒有 `usage`，分數尺度與 nemotron 不同 |
+| decision | 轉送 Jev `jev-1.14.0`（SystemOne 格式），回應原樣傳回 |
+
+API key 放在 `fallback-fastapi/.env`（`COHERE_API_KEY`、`JEV_API_KEY`），以 override 方式載入；client 帶的 `Authorization` 不會轉送給雲端 API。
 
 ```bash
 cd fallback-fastapi
 uv run server.py              # 預設 127.0.0.1:12359；FALLBACK_DTYPE=fp32 可改用 float32
-uv run pytest -q              # 對照 vLLM 後端驗證（後端連不上時跳過）
+uv run pytest -q              # 對照 vLLM 後端驗證，並實際呼叫 Cohere / Jev 少量請求
 ```
 
 Gateway 啟動或 reload 時，fallback 必須已在執行，否則探測失敗會被停用，要等下次 `reload` 才會重新探測。
