@@ -8,7 +8,7 @@
 
 ## 需求
 
-- Linux + NVIDIA GPU（BF16 權重約 2.3 GB，預設設定總共約需 4 GB 顯示記憶體）
+- Linux + NVIDIA GPU（BF16 權重約 2.3 GB，預設設定總共約需 4 GB 顯示記憶體；FP8 版見 [FP8 量化](#fp8-量化)）
 - [uv](https://docs.astral.sh/uv/)
 - Python 3.12（已在 `.python-version` 固定；**勿用 Python 3.13.8**，見[注意事項](#注意事項)）
 
@@ -148,11 +148,31 @@ vLLM 預設遇到超過 `MAX_MODEL_LEN` 的輸入會回 400。本專案的 `rera
 
 兩者可同時使用。若文件很長且答案可能在後段，建議 client 端先自行切段，再分別 rerank（截斷會遺失後段內容）。
 
+## FP8 量化
+
+NVIDIA 官方只提供 BF16 權重。`start_fp8.sh` 讓 vLLM 在載入時動態量化成 FP8（`--quantization fp8_per_tensor`，不需另外下載模型），需 Ada / Hopper / Blackwell GPU（RTX 40、H100、RTX 50 以上）。參數與環境變數都和 `start.sh` 相同：
+
+```bash
+./start_fp8.sh
+./start_fp8.sh --gpu 1 --port 8001
+```
+
+在 RTX 5070 Ti 上離線比對（vLLM 0.31.0，同一組中英文 query/文件）：
+
+| | BF16 | FP8 |
+|---|---|---|
+| 權重記憶體 | 2.32 GiB | 1.41 GiB |
+| 100 份長文件（每份約 3000 tokens） | 13.6 秒 | 8.9 秒 |
+| 分數差距（sigmoid 後） | — | 最大 0.04 |
+| 排序 | — | 高相關文件排序一致；分數都接近 0 的低相關文件順序可能互換 |
+
+需要和 NVIDIA 官方評測結果完全一致時，請用 `start.sh`（BF16）。
+
 ## GPU 記憶體
 
 vLLM 啟動時一定會預先配置固定大小的 GPU 記憶體。本專案以 `--kv-cache-memory-bytes` 直接指定 KV cache 大小，而非依 GPU 總量比例配置，方便與其他服務共用 GPU：
 
-- 實際用量約為：權重 2.3 GB + KV cache（預設 512M）+ 運算空間
+- 實際用量約為：權重（FP8 1.4 GB／BF16 2.3 GB）+ KV cache（預設 512M）+ 運算空間
 - rerank 的序列做一次 forward 就結束，KV cache 只是 attention 計算的暫存空間，不會跨請求重用
 - 同時處理量受 `max_num_batched_tokens` 限制（16 GB GPU 預設 8192 tokens/step，約需 256 MB KV cache），一次送 100 份文件會自動拆成多個 step 依序計算
 - `GPU_MEMORY_UTILIZATION` 不影響實際配置，但 vLLM 啟動時仍會檢查「剩餘記憶體 ≥ 總量 × 此比例」，GPU 被其他程式佔用較多時可調低
@@ -180,7 +200,8 @@ uv run python test_client.py http://HOST:12361
 
 | 檔案 | 說明 |
 |---|---|
-| `start.sh` | 啟動腳本 |
+| `start.sh` | 啟動腳本（BF16） |
+| `start_fp8.sh` | FP8 啟動腳本（包裝 `start.sh`） |
 | `nemotron-rerank.jinja` | score template |
 | `rerank_middleware.py` | 預設截斷 middleware |
 | `test_client.py` | 整合測試 |
