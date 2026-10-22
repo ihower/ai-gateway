@@ -346,3 +346,70 @@ async fn reload_swaps_backends_and_lets_inflight_requests_finish() {
     assert!(gw.app.reload().await.is_err());
     assert_eq!(gw.app.pool.load().version, 2);
 }
+
+fn with_fallback(yaml: String, url: &str) -> String {
+    yaml.replacen("  reranker:\n", &format!("    fallback:\n      url: \"{url}\"\n      request_timeout_ms: 8000\n  reranker:\n"), 1)
+}
+
+#[tokio::test]
+async fn embedding_falls_back_when_all_backends_fail() {
+    let (u1, m1) = spawn_mock(1).await;
+    let (u2, m2) = spawn_mock(2).await;
+    let (fb, mf) = spawn_mock(9).await;
+    let (gw, report) = start_gateway(|d| with_fallback(config_yaml(d, &[&u1, &u2], &[&u1], &[&u1]), &fb)).await;
+    assert!(report.disabled.is_empty());
+    assert_eq!(report.changes["embedding"].added, vec![u1.clone(), u2.clone(), fb.clone()]);
+    let url = format!("{}/v1/embeddings", gw.url);
+
+    // 一般後端正常時不使用 fallback
+    let (status, _) = post_json(&url, json!({"input": ["a", "b", "c"]})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(mf.hits.load(Ordering::Relaxed), 0);
+
+    // 一台壞：在另一台重試，仍不使用 fallback
+    m1.mode.store(FAIL, Ordering::Relaxed);
+    let (status, body) = post_json(&url, json!({"input": ["a", "b", "c", "d"]})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(mf.hits.load(Ordering::Relaxed), 0);
+
+    // 兩台都壞：失敗的那份改送 fallback，結果依序合併
+    m2.mode.store(FAIL, Ordering::Relaxed);
+    let (status, body) = post_json(&url, json!({"input": ["a", "bb", "ccc"]})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let data = body["data"].as_array().unwrap();
+    assert_eq!(data.iter().map(|d| d["embedding"][0].as_f64().unwrap()).collect::<Vec<_>>(), vec![1.0, 2.0, 3.0]);
+    assert!(data.iter().all(|d| d["embedding"][1] == json!(9.0)));
+
+    // 兩台都進入 unhealthy 後，直接送 fallback，不再先打壞掉的後端
+    for _ in 0..3 {
+        post_json(&url, json!({"input": "x"})).await;
+    }
+    let pool = gw.app.pool.load();
+    assert!(pool.embedding.backends[..2].iter().all(|b| b.state() == ai_gateway::backend::BackendState::Unhealthy));
+    let before = m1.hits.load(Ordering::Relaxed) + m2.hits.load(Ordering::Relaxed);
+    let fb_before = mf.hits.load(Ordering::Relaxed);
+    let (status, body) = post_json(&url, json!({"input": ["a", "b", "c", "d"]})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(m1.hits.load(Ordering::Relaxed) + m2.hits.load(Ordering::Relaxed), before);
+    assert_eq!(mf.hits.load(Ordering::Relaxed), fb_before + 1, "whole request goes to fallback unsplit");
+    assert!(pool.status().services["embedding"][2].fallback);
+
+    // fallback 也壞：502
+    mf.mode.store(FAIL, Ordering::Relaxed);
+    let (status, _) = post_json(&url, json!({"input": "x"})).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+}
+
+#[tokio::test]
+async fn fallback_serves_when_all_backends_disabled_at_startup() {
+    let (fb, mf) = spawn_mock(9).await;
+    let dead = dead_url().await;
+    let (gw, report) = start_gateway(|d| with_fallback(config_yaml(d, &[&dead], &[&fb], &[&fb]), &fb)).await;
+    assert_eq!(report.disabled.len(), 1);
+    let resp = reqwest::get(format!("{}/readyz", gw.url)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let (status, body) = post_json(&format!("{}/v1/embeddings", gw.url), json!({"input": ["a", "b"]})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"][1]["embedding"], json!([1.0, 9.0]));
+    assert_eq!(mf.hits.load(Ordering::Relaxed), 1);
+}

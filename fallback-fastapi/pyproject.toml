@@ -1,0 +1,20 @@
+[project]
+name = "voyage-fallback"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.159.1",
+    "sentence-transformers>=6.2.0",
+    "torch>=2.14.1",
+    "transformers>=4.56",
+    "uvicorn>=0.54.0",
+]
+
+[[tool.uv.index]]
+url = "https://download.pytorch.org/whl/cpu"
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=9.1.1",
+]

@@ -1,5 +1,7 @@
 /target
 /run
 .env
+/fallback-fastapi/.venv
+__pycache__/
 /config.yaml
 implementation-notes.md

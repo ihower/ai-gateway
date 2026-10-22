@@ -59,6 +59,10 @@ pub struct Backend {
     pub weight: u32,
     /// 啟動 / reload 時探測失敗的原因；`Some` 表示停用，直到下次 reload。
     pub disabled: Option<String>,
+    /// 只在所有一般後端都失效時使用（SPEC §8.6）。
+    pub fallback: bool,
+    /// 覆寫 service 的 `request_timeout_ms`。
+    pub request_timeout_ms: Option<u64>,
     consecutive_failures: AtomicU32,
     unhealthy_until_ms: AtomicU64,
     pub stats: Arc<BackendStats>,
@@ -79,10 +83,18 @@ impl Backend {
             url,
             weight,
             disabled,
+            fallback: false,
+            request_timeout_ms: None,
             consecutive_failures: AtomicU32::new(0),
             unhealthy_until_ms: AtomicU64::new(0),
             stats,
         }
+    }
+
+    pub fn into_fallback(mut self, request_timeout_ms: Option<u64>) -> Self {
+        self.fallback = true;
+        self.request_timeout_ms = request_timeout_ms;
+        self
     }
 
     pub fn state(&self) -> BackendState {
@@ -131,6 +143,7 @@ pub struct ServicePool {
     pub kind: ServiceKind,
     pub tuning: Tuning,
     pub probe_model: Option<String>,
+    /// 一般後端在前，fallback（若有）排在最後。
     pub backends: Vec<Arc<Backend>>,
     pub client: reqwest::Client,
     /// 平滑加權輪流的排程（後端索引序列）。
@@ -140,7 +153,8 @@ pub struct ServicePool {
 
 impl ServicePool {
     pub fn new(kind: ServiceKind, cfg: &ServiceConfig, backends: Vec<Arc<Backend>>) -> Self {
-        let weights: Vec<u32> = backends.iter().map(|b| b.weight).collect();
+        debug_assert!(backends.iter().rev().skip(1).all(|b| !b.fallback), "fallback must be last");
+        let weights: Vec<u32> = backends.iter().filter(|b| !b.fallback).map(|b| b.weight).collect();
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_millis(cfg.tuning.connect_timeout_ms))
             .pool_idle_timeout(Duration::from_secs(90))
@@ -159,14 +173,20 @@ impl ServicePool {
         }
     }
 
-    /// 可被選中的後端：啟用中且健康者；若全部不健康則退回所有啟用中的後端（SPEC §8.1）。
+    /// 可被選中的一般後端：啟用中且健康者；若全部不健康，有 fallback 時回空（改用 fallback），
+    /// 否則退回所有啟用中的後端（SPEC §8.1）。
     pub fn eligible(&self, exclude: &[usize]) -> Vec<usize> {
         let enabled: Vec<usize> = (0..self.backends.len())
-            .filter(|i| self.backends[*i].disabled.is_none() && !exclude.contains(i))
+            .filter(|i| !self.backends[*i].fallback && self.backends[*i].disabled.is_none() && !exclude.contains(i))
             .collect();
         let healthy: Vec<usize> =
             enabled.iter().copied().filter(|i| self.backends[*i].state() == BackendState::Enabled).collect();
-        if healthy.is_empty() { enabled } else { healthy }
+        if !healthy.is_empty() || self.fallback().is_some() { healthy } else { enabled }
+    }
+
+    /// 未停用的 fallback 後端索引。fallback 是最後手段，unhealthy 時仍會使用。
+    pub fn fallback(&self) -> Option<usize> {
+        self.backends.iter().position(|b| b.fallback && b.disabled.is_none())
     }
 
     /// 依加權輪流挑出最多 `k` 個不重複的後端。
@@ -265,6 +285,7 @@ impl Pool {
                     .iter()
                     .map(|b| BackendStatus {
                         url: b.url.clone(),
+                        fallback: b.fallback,
                         weight: b.weight,
                         state: b.state(),
                         reason: b.disabled.clone(),
@@ -301,6 +322,8 @@ pub struct PoolStatus {
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct BackendStatus {
     pub url: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fallback: bool,
     pub weight: u32,
     pub state: BackendState,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -317,12 +340,18 @@ mod tests {
     use crate::config::BackendConfig;
 
     fn pool(weights: &[u32], disabled: &[usize]) -> ServicePool {
+        pool_with_fallback(weights, disabled, None)
+    }
+
+    /// `fallback`：`Some(停用原因)`，`Some(None)` 為啟用中的 fallback。
+    fn pool_with_fallback(weights: &[u32], disabled: &[usize], fallback: Option<Option<&str>>) -> ServicePool {
         let cfg = ServiceConfig {
             tuning: Tuning::default(),
             probe_model: None,
             backends: weights.iter().enumerate().map(|(i, w)| BackendConfig { url: format!("http://b{i}"), weight: *w }).collect(),
+            fallback: None,
         };
-        let backends = cfg
+        let mut backends: Vec<Arc<Backend>> = cfg
             .backends
             .iter()
             .enumerate()
@@ -331,6 +360,10 @@ mod tests {
                 Arc::new(Backend::new(ServiceKind::Embedding, b.url.clone(), b.weight, reason, Default::default()))
             })
             .collect();
+        if let Some(reason) = fallback {
+            let b = Backend::new(ServiceKind::Embedding, "http://fb".into(), 1, reason.map(String::from), Default::default());
+            backends.push(Arc::new(b.into_fallback(None)));
+        }
         ServicePool::new(ServiceKind::Embedding, &cfg, backends)
     }
 
@@ -396,5 +429,42 @@ mod tests {
         assert_eq!(p.eligible(&[]), vec![0, 1]);
         p.backends[0].record_success();
         assert_eq!(p.backends[0].state(), BackendState::Enabled);
+    }
+
+    #[test]
+    fn fallback_only_when_primaries_fail() {
+        let p = pool_with_fallback(&[1, 1], &[], Some(None));
+        assert_eq!(p.fallback(), Some(2));
+        // fallback 不參與輪流
+        for _ in 0..4 {
+            assert!(!p.pick(3, &[]).contains(&2));
+        }
+        let t = Tuning::default();
+        for _ in 0..3 {
+            p.backends[0].record_failure(&t, "x");
+        }
+        assert_eq!(p.eligible(&[]), vec![1]);
+        // 一般後端全部不健康 → 不再勉強嘗試，改用 fallback
+        for _ in 0..3 {
+            p.backends[1].record_failure(&t, "x");
+        }
+        assert!(p.eligible(&[]).is_empty());
+        // fallback 不健康仍可用（最後手段）
+        for _ in 0..3 {
+            p.backends[2].record_failure(&t, "x");
+        }
+        assert_eq!(p.fallback(), Some(2));
+
+        let p = pool_with_fallback(&[1, 1], &[0, 1], Some(None));
+        assert!(p.pick(1, &[]).is_empty());
+        assert!(p.has_usable());
+        // fallback 停用時維持原本行為
+        let p = pool_with_fallback(&[1], &[], Some(Some("down")));
+        assert_eq!(p.fallback(), None);
+        p.backends[0].record_failure(&t, "x");
+        for _ in 0..3 {
+            p.backends[0].record_failure(&t, "x");
+        }
+        assert_eq!(p.eligible(&[]), vec![0]);
     }
 }

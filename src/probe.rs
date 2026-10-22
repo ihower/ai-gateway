@@ -87,9 +87,9 @@ pub async fn build_pool(config: Config, version: u64, prev: Option<&Pool>) -> (P
     let probes = ServiceKind::ALL.iter().flat_map(|kind| {
         let svc = config.service(*kind);
         let client = &probe_client;
-        svc.backends.iter().map(move |b| async move {
-            let result = probe_backend(client, *kind, &b.url, svc.probe_model.as_deref()).await;
-            (*kind, b.url.clone(), result.err())
+        svc.urls().map(move |url| async move {
+            let result = probe_backend(client, *kind, url, svc.probe_model.as_deref()).await;
+            (*kind, url.to_string(), result.err())
         })
     });
     let results = futures::future::join_all(probes).await;
@@ -99,24 +99,24 @@ pub async fn build_pool(config: Config, version: u64, prev: Option<&Pool>) -> (P
     let mut services = Vec::new();
     for kind in ServiceKind::ALL {
         let svc = config.service(kind);
-        let backends: Vec<Arc<Backend>> = svc
-            .backends
-            .iter()
-            .map(|b| {
-                let failure = results.iter().find(|(k, u, _)| *k == kind && *u == b.url).and_then(|(_, _, e)| e.clone());
-                if let Some(reason) = &failure {
-                    tracing::warn!(service = %kind, backend = %b.url, reason, "backend disabled: probe failed");
-                    disabled.push(DisabledBackend { service: kind.to_string(), url: b.url.clone(), reason: reason.clone() });
-                }
-                let stats = prev_stats.get(&(kind, b.url.clone())).cloned().unwrap_or_default();
-                Arc::new(Backend::new(kind, b.url.clone(), b.weight, failure, stats))
-            })
-            .collect();
+        let mut make = |url: &str, weight: u32| {
+            let failure = results.iter().find(|(k, u, _)| *k == kind && u == url).and_then(|(_, _, e)| e.clone());
+            if let Some(reason) = &failure {
+                tracing::warn!(service = %kind, backend = %url, reason, "backend disabled: probe failed");
+                disabled.push(DisabledBackend { service: kind.to_string(), url: url.to_string(), reason: reason.clone() });
+            }
+            let stats = prev_stats.get(&(kind, url.to_string())).cloned().unwrap_or_default();
+            Backend::new(kind, url.to_string(), weight, failure, stats)
+        };
+        let mut backends: Vec<Arc<Backend>> = svc.backends.iter().map(|b| Arc::new(make(&b.url, b.weight))).collect();
+        if let Some(f) = &svc.fallback {
+            backends.push(Arc::new(make(&f.url, 1).into_fallback(f.request_timeout_ms)));
+        }
         if backends.iter().all(|b| b.disabled.is_some()) {
             tracing::error!(service = %kind, "all backends disabled; requests will get 503");
         }
         let old: Vec<String> = prev.map(|p| p.service(kind).backends.iter().map(|b| b.url.clone()).collect()).unwrap_or_default();
-        let new: Vec<String> = svc.backends.iter().map(|b| b.url.clone()).collect();
+        let new: Vec<String> = svc.urls().map(String::from).collect();
         changes.insert(
             kind.to_string(),
             Changes {

@@ -33,6 +33,18 @@ cargo build --release
 
 升級 binary 或修改監聽位址時，送 `SIGTERM`：gateway 停止接受新連線，等進行中的 request 完成（最多 `shutdown_timeout_secs`）後結束。
 
+## Embedding CPU fallback
+
+兩台 embedding 後端都失效時，gateway 會改送 `services.embedding.fallback`（見 SPEC §8.6）。Fallback 是獨立的 Python process，用 Sentence Transformers 在 CPU 上跑 `voyageai/voyage-4-nano`，回應格式、prompt（`input_type`）、`dimensions` 與 `usage` 都與 vLLM 後端一致：
+
+```bash
+cd fallback-fastapi
+uv run server.py              # 預設 127.0.0.1:12359；FALLBACK_DTYPE=fp32 可改用 float32
+uv run pytest -q              # 對照 vLLM 後端驗證（後端連不上時跳過）
+```
+
+Gateway 啟動或 reload 時，fallback 必須已在執行，否則探測失敗會被停用，要等下次 `reload` 才會重新探測。
+
 ## 端點
 
 | Method | Path | 說明 |

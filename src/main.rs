@@ -132,7 +132,7 @@ async fn check(config_path: &std::path::Path, json: bool) -> ExitCode {
     };
     let services: Vec<_> = config::ServiceKind::ALL
         .iter()
-        .flat_map(|k| config.service(*k).backends.iter().map(move |b| (*k, b.url.clone())))
+        .flat_map(|k| config.service(*k).urls().map(move |u| (*k, u.to_string())))
         .collect();
     let path = config.path.display().to_string();
     let (_, report) = build_pool(config, 0, None).await;
@@ -168,8 +168,9 @@ async fn status(config_path: &std::path::Path, json: bool) -> ExitCode {
         for b in backends {
             let state = serde_json::to_value(b.state).unwrap();
             let reason = b.reason.as_deref().map(|r| format!(" ({r})")).unwrap_or_default();
+            let role = if b.fallback { " [fallback]" } else { "" };
             println!(
-                "{service:<10} {:<32} {:<10} inflight={} requests={} errors={}{reason}",
+                "{service:<10} {:<32} {:<10} inflight={} requests={} errors={}{role}{reason}",
                 b.url,
                 state.as_str().unwrap_or(""),
                 b.inflight,

@@ -27,7 +27,11 @@ pub struct Chunk {
 pub fn plan_chunks(svc: &ServicePool, n: usize) -> Result<Vec<Chunk>, GatewayError> {
     let chosen = svc.pick(n.max(1), &[]);
     if chosen.is_empty() {
-        return Err(GatewayError::NoBackend);
+        // 一般後端都不可用時，整個 request 交給 fallback，不拆分
+        return match svc.fallback() {
+            Some(backend) => Ok(vec![Chunk { backend, offset: 0, len: n.max(1) }]),
+            None => Err(GatewayError::NoBackend),
+        };
     }
     let weights: Vec<u32> = chosen.iter().map(|i| svc.backends[*i].weight).collect();
     let mut offset = 0;

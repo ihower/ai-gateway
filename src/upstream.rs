@@ -143,7 +143,7 @@ fn request(svc: &ServicePool, idx: usize, path: &str, body: Bytes, fwd: &Forward
     let mut req = svc
         .client
         .post(format!("{}{}", backend.url, path))
-        .timeout(Duration::from_millis(svc.tuning.request_timeout_ms))
+        .timeout(Duration::from_millis(backend.request_timeout_ms.unwrap_or(svc.tuning.request_timeout_ms)))
         .header(header::CONTENT_TYPE, "application/json")
         .body(body);
     if let Some(v) = &fwd.authorization {
@@ -178,7 +178,8 @@ pub async fn call_once(svc: &ServicePool, idx: usize, path: &str, body: Bytes, f
     result
 }
 
-/// 送出並在後端失敗時改送其他後端，最多 `max_retries` 次（embedding / rerank 為冪等運算）。
+/// 送出並在後端失敗時改送其他後端，最多 `max_retries` 次（embedding / rerank 為冪等運算）；
+/// 一般後端都失敗後，若有 fallback 再送一次（不計入 `max_retries`）。
 /// `parse` 檢查 2xx 回應；檢查失敗視同後端失敗。
 pub async fn call_with_retry<T>(
     svc: &ServicePool,
@@ -202,14 +203,16 @@ pub async fn call_with_retry<T>(
             },
             Err(e) => e,
         };
-        if !err.is_backend_failure() || tried.len() > svc.tuning.max_retries as usize {
+        if !err.is_backend_failure() {
             return Err(err);
         }
-        match svc.pick(1, &tried).first() {
+        let retry = if tried.len() <= svc.tuning.max_retries as usize { svc.pick(1, &tried).first().copied() } else { None };
+        match retry.or_else(|| svc.fallback().filter(|f| !tried.contains(f))) {
             Some(next) => {
-                tracing::warn!(service = %svc.kind, backend = %svc.backends[idx].url, retry_to = %svc.backends[*next].url,
-                    reason = %err.reason(), "retrying on another backend");
-                idx = *next;
+                let msg = if svc.backends[next].fallback { "falling back" } else { "retrying on another backend" };
+                tracing::warn!(service = %svc.kind, backend = %svc.backends[idx].url, retry_to = %svc.backends[next].url,
+                    reason = %err.reason(), "{msg}");
+                idx = next;
                 tried.push(idx);
             }
             None => return Err(err),

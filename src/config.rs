@@ -107,6 +107,15 @@ pub struct ServiceConfig {
     pub tuning: Tuning,
     pub probe_model: Option<String>,
     pub backends: Vec<BackendConfig>,
+    /// 所有 `backends` 都失效時才使用的後端（目前只支援 embedding）。
+    pub fallback: Option<FallbackConfig>,
+}
+
+impl ServiceConfig {
+    /// 所有後端 URL，fallback 排在最後。
+    pub fn urls(&self) -> impl Iterator<Item = &str> {
+        self.backends.iter().map(|b| b.url.as_str()).chain(self.fallback.iter().map(|f| f.url.as_str()))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,6 +124,15 @@ pub struct BackendConfig {
     pub url: String,
     #[serde(default = "default_weight")]
     pub weight: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FallbackConfig {
+    pub url: String,
+    /// 覆寫 service 的 `request_timeout_ms`；CPU 推論較慢，通常要設得較長。
+    #[serde(default)]
+    pub request_timeout_ms: Option<u64>,
 }
 
 fn default_shutdown_timeout() -> u64 {
@@ -179,6 +197,8 @@ struct RawService {
     #[serde(default)]
     probe_model: Option<String>,
     backends: Vec<BackendConfig>,
+    #[serde(default)]
+    fallback: Option<FallbackConfig>,
     // service 層級可覆寫 defaults 的任一欄位
     connect_timeout_ms: Option<u64>,
     request_timeout_ms: Option<u64>,
@@ -214,7 +234,18 @@ impl RawService {
             }
             backends.push(BackendConfig { url, weight: b.weight });
         }
-        Ok(ServiceConfig { tuning, probe_model: self.probe_model, backends })
+        let fallback = match self.fallback {
+            Some(_) if kind != ServiceKind::Embedding => bail!("services.{kind}.fallback is only supported for embedding"),
+            Some(f) => {
+                let url = normalize_url(&f.url).with_context(|| format!("services.{kind}.fallback: invalid url {:?}", f.url))?;
+                if backends.iter().any(|b| b.url == url) {
+                    bail!("services.{kind}.fallback: {url} is also listed in backends");
+                }
+                Some(FallbackConfig { url, request_timeout_ms: f.request_timeout_ms })
+            }
+            None => None,
+        };
+        Ok(ServiceConfig { tuning, probe_model: self.probe_model, backends, fallback })
     }
 }
 
@@ -308,6 +339,15 @@ services:
         assert_eq!(c.embedding.tuning.unhealthy_threshold, 3);
         assert_eq!(c.embedding.tuning.unhealthy_cooldown_secs, 600);
         assert_eq!(c.decision.probe_model.as_deref(), Some("clef-flash"));
+        assert!(c.embedding.fallback.is_none());
+
+        let with_fallback = SAMPLE.replace(
+            "        weight: 3\n",
+            "        weight: 3\n    fallback:\n      url: \"http://127.0.0.1:9/\"\n      request_timeout_ms: 120000\n",
+        );
+        let c = parse(&with_fallback, Path::new("c.yaml")).unwrap();
+        let f = c.embedding.fallback.unwrap();
+        assert_eq!((f.url.as_str(), f.request_timeout_ms), ("http://127.0.0.1:9", Some(120000)));
     }
 
     #[test]
@@ -322,5 +362,9 @@ services:
         assert!(format!("{:#}", parse(&https, Path::new("c.yaml")).unwrap_err()).contains("only http://"));
         let unknown = SAMPLE.replace("max_retries: 2", "max_retry: 2");
         assert!(parse(&unknown, Path::new("c.yaml")).is_err());
+        let dup_fallback = SAMPLE.replace("        weight: 3\n", "        weight: 3\n    fallback: {url: \"http://10.0.0.1:1\"}\n");
+        assert!(parse(&dup_fallback, Path::new("c.yaml")).unwrap_err().to_string().contains("also listed"));
+        let rerank_fallback = SAMPLE.replace("    request_timeout_ms: 5000\n", "    request_timeout_ms: 5000\n    fallback: {url: \"http://10.0.0.9:1\"}\n");
+        assert!(parse(&rerank_fallback, Path::new("c.yaml")).unwrap_err().to_string().contains("only supported for embedding"));
     }
 }

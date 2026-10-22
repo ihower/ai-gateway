@@ -53,6 +53,9 @@ services:
     backends:
       - url: "http://127.0.0.1:12351"
       - url: "http://127.0.0.1:12352"
+    fallback:                        # 選填，只支援 embedding；見 §8.6
+      url: "http://127.0.0.1:12359"
+      request_timeout_ms: 120000     # 覆寫 request_timeout_ms
 
   reranker:
     probe_model: null
@@ -354,7 +357,7 @@ decision   (no change)
   - 拆分（embedding / rerank）時，各份筆數也依 `weight` 比例切分；權重相同即平分
 - 拆分時的 H（健康後端數）只計算**啟用中且健康**的後端。
 - `disabled` 的後端一律不選。
-- 啟用中的後端若全部 `unhealthy`，仍嘗試全部（避免因誤判而完全停擺）。
+- 啟用中的後端若全部 `unhealthy`，仍嘗試全部（避免因誤判而完全停擺）；embedding 設有 fallback 時改送 fallback（§8.6）。
 - 某 service 的後端全部 `disabled` → 該 service 的 request 直接回 `503`（`no available backend`），`/readyz` 回 `503`。
 
 ### 8.2 後端狀態與健康檢查
@@ -412,6 +415,17 @@ decision   (no change)
 
 - Rerank 依 Cohere 格式：`{"message": "all backends failed"}`
 - Decision：後端錯誤原樣傳遞；gateway 自身錯誤回 `{"error": "..."}`
+
+### 8.6 Embedding fallback
+
+`services.embedding.fallback` 指定一個「最後手段」後端（CPU 跑的 voyage-4-nano，見 `fallback-fastapi/`），只在一般後端都失效時使用：
+
+- 不參與加權輪流與拆分。
+- 一般後端全部 `disabled` 或全部 `unhealthy` 時，整個 request 直接送 fallback（不拆分），不再嘗試不健康的一般後端（取代 §8.1「全部不健康仍嘗試全部」）。
+- 子請求在一般後端依 §8.3 重試後仍失敗時，該份改送 fallback 一次（不計入 `max_retries`）。4xx 不會觸發 fallback。
+- 啟動 / reload 時也會探測 fallback；探測失敗則停用，行為與沒有 fallback 相同。執行期間 fallback 標記為 `unhealthy` 時仍會使用。
+- `request_timeout_ms` 可單獨覆寫（CPU 推論較慢）。
+- fallback 可用時，`/readyz` 視 embedding 為可用；`status` 與 `/admin/backends` 以 `fallback` 標示。
 
 ---
 
