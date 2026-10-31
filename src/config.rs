@@ -175,13 +175,13 @@ pub struct DecisionRerankerConfig {
     /// 單一 rerank request 同時送出的 decision 呼叫上限；`None` = 不限制。
     #[serde(default)]
     pub max_concurrency: Option<usize>,
-    /// 放進 state 前把 document 截斷到這個字元數；`None` = 不截斷。
+    /// 放進 state 前把 document 截斷到這個字元數；`None` = 不截斷。與 `chunking` 擇一。
     #[serde(default)]
     pub max_document_chars: Option<usize>,
     /// 一般後端失敗時，是否把整個 request 改送 `services.decision.fallback`。
     #[serde(default = "default_true")]
     pub use_fallback: bool,
-    /// 長文件切段，在 `max_document_chars` 截斷之後進行；`None` = 不切。
+    /// 長文件切段；`None` = 不切。與 `max_document_chars` 擇一。
     #[serde(default)]
     pub chunking: Option<ChunkingConfig>,
 }
@@ -196,6 +196,9 @@ impl DecisionRerankerConfig {
         }
         if self.max_documents == 0 || self.max_concurrency == Some(0) || self.max_document_chars == Some(0) {
             bail!("services.decision_reranker: max_documents / max_concurrency / max_document_chars must be at least 1");
+        }
+        if self.max_document_chars.is_some() && self.chunking.is_some() {
+            bail!("services.decision_reranker: max_document_chars and chunking are mutually exclusive");
         }
         if let Some(c) = &self.chunking {
             c.validate("services.decision_reranker")?;
@@ -465,6 +468,7 @@ services:
             "instructions: \" \"",
             "unknown: 1",
             "chunking: {max_chars: 10, overlap_chars: 10}",
+            "chunking: {max_chars: 10}\n    max_document_chars: 100",
         ] {
             assert!(parse(&format!("{SAMPLE}  decision_reranker:\n    {bad}\n"), Path::new("c.yaml")).is_err(), "{bad}");
         }

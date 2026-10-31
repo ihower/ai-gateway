@@ -82,9 +82,9 @@ services:
     model: null
     max_documents: 1000
     max_concurrency: null            # null = 不限制
-    max_document_chars: null         # null = 不截斷
+    max_document_chars: null         # null = 不截斷；與 chunking 擇一
     use_fallback: true               # 失敗時整包改送 services.decision.fallback
-    chunking: null                   # 同 reranker 的 chunking；null = 不切段（見 §5.4、§6.4）
+    chunking: null                   # 同 reranker 的 chunking；null = 不切段；與 max_document_chars 擇一（見 §5.4、§6.4）
 ```
 
 - 每個 backend 可選填 `weight`（預設 1），用於拆分比例與輪流權重。
@@ -309,7 +309,7 @@ Jev（TypeSafe，`https://api.typesafe.ai/v1/systemone`）與 Clef 使用相同�
 
 - 設定：`services.decision_reranker`（§2）。沒有自己的後端，**共用 `services.decision` 的後端池**（權重、健康狀態、in-flight 統計、探測、fallback）；未設定時回 `404 {"message": "decision reranker is not configured"}`。可熱重載。
 - Request：`query`（字串）、`documents`（字串，或含 `text` 的物件）、`top_n`（`0` 視同未指定）；非標準欄位 `instructions` 可覆寫題目。`model`、`return_documents`、`max_tokens_per_doc` 忽略。超過 `max_documents` 回 400。
-- 每筆的 decision request：`{"state": <state_template 套入 query 與 document>, "questions": {"relevant": {"type": "noul", "instructions": ...}}}`，`model` 有設定才帶。`max_document_chars` 只截斷放進 state 的 document，回應中的 `document.text` 仍是原文。設定 `chunking` 時，截斷後的 document 再依 §5.4 的規則切段，**每一段一個 decision 呼叫**，該 document 的分數取各段最高分；`max_documents` 仍以原始 document 數計算，`max_concurrency` 與分派則以段為單位。回應缺 `answers.relevant` 的 `noul` 答案視為無效回應（後端失敗）。
+- 每筆的 decision request：`{"state": <state_template 套入 query 與 document>, "questions": {"relevant": {"type": "noul", "instructions": ...}}}`，`model` 有設定才帶。`max_document_chars` 只截斷放進 state 的 document，回應中的 `document.text` 仍是原文。長文件可改設 `chunking`，依 §5.4 的規則切段（與 `max_document_chars` 只能擇一，兩者都設定時拒絕啟動 / reload），**每一段一個 decision 呼叫**，該 document 的分數取各段最高分；`max_documents` 仍以原始 document 數計算，`max_concurrency` 與分派則以段為單位。回應缺 `answers.relevant` 的 `noul` 答案視為無效回應（後端失敗）。
 - 分派：每筆依權重平滑輪流交錯分給健康後端，同一 request 同時送出的呼叫數不超過 `max_concurrency`（不設則不限制）。單筆逾時沿用 decision 的 `request_timeout_ms`。
 - 重試：與 `/v1/systemone` 不同，這些 request 由 gateway 產生且沒有副作用，所以依 §8.3 的冪等規則在 5xx / 逾時 / 無效回應時改送其他後端。
 - 失敗：任一筆重試後仍失敗，整個 request 失敗（Cohere 錯誤格式，§8.5），不回傳部分結果。`use_fallback: true` 且 decision 有 fallback 時，**整個 request 的所有 document** 改送 fallback（Jev，分數尺度不同，不能與一般後端混排）；一般後端都不可用時也直接整包送 fallback。注意 fallback 每份 document 都是一次付費 API 呼叫。

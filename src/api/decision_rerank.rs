@@ -146,7 +146,7 @@ async fn rerank(svc: &ServicePool, cfg: &DecisionRerankerConfig, fwd: Forward, b
     let n = req.documents.len();
     fwd.log.set_items(n);
     let instructions = req.instructions.as_deref().unwrap_or(&cfg.instructions);
-    // 先截斷再切段（SPEC §6.4）：每一段各是一個 decision 呼叫，owner[i] 是第 i 段所屬的 document
+    // 截斷或切段（設定上擇一，SPEC §6.4）：每一段各是一個 decision 呼叫，owner[i] 是第 i 段所屬的 document
     let mut owner = Vec::new();
     let mut payloads = Vec::new();
     for (i, doc) in req.documents.iter().enumerate() {

@@ -691,25 +691,23 @@ async fn decision_rerank_falls_back_with_whole_request() {
 }
 
 #[tokio::test]
-async fn decision_rerank_chunks_after_truncation_and_takes_max() {
+async fn decision_rerank_chunks_long_documents_and_takes_max() {
     let (u1, m1) = spawn_mock(1).await;
     let (u2, m2) = spawn_mock(2).await;
     let (fb, mf) = spawn_mock(9).await;
     let (gw, _) = start_gateway(|d| {
         let yaml = with_fallback_on(config_yaml(d, &[&u1], &[&u1], &[&u1, &u2]), "decision", &fb);
-        with_decision_reranker(yaml, "    max_document_chars: 8\n    chunking: {max_chars: 4, overlap_chars: 1}\n")
+        with_decision_reranker(yaml, "    chunking: {max_chars: 4, overlap_chars: 1}\n")
     })
     .await;
     let url = format!("{}/decision/v2/rerank", gw.url);
-    // 第 2 份先截斷成前 8 個字元（MIXED）再切段
-    let long = format!("{MIXED}bbbbbbbb");
-    let body = json!({"query": "q", "documents": ["aaa", long, "a"]});
+    let body = json!({"query": "q", "documents": ["aaa", MIXED, "a"]});
     let (status, out) = post_json(&url, body.clone()).await;
     assert_eq!(status, StatusCode::OK, "{out}");
     assert_eq!(
         out["results"],
         json!([
-            {"index": 1, "relevance_score": 0.12, "document": {"text": long}},
+            {"index": 1, "relevance_score": 0.12, "document": {"text": MIXED}},
             {"index": 0, "relevance_score": 0.03, "document": {"text": "aaa"}},
             {"index": 2, "relevance_score": 0.01, "document": {"text": "a"}}
         ])
@@ -724,7 +722,7 @@ async fn decision_rerank_chunks_after_truncation_and_takes_max() {
     let (status, out) = post_json(&url, body).await;
     assert_eq!(status, StatusCode::OK, "{out}");
     assert_eq!(out["model"], json!("mock-9"));
-    assert_eq!(out["results"][0], json!({"index": 1, "relevance_score": 0.12, "document": {"text": long}}));
+    assert_eq!(out["results"][0], json!({"index": 1, "relevance_score": 0.12, "document": {"text": MIXED}}));
     assert_eq!(mf.hits.load(Ordering::Relaxed), 5);
 }
 
