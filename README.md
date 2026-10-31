@@ -3,6 +3,7 @@
 以 Rust 實作的 API gateway，前置 embedding（OpenAI 格式）、reranker（Cohere 格式）與 decision（Jev / SystemOne 格式）三類後端。完整規格見 [SPEC.md](SPEC.md)。
 
 - Embedding / reranker：多筆 input / documents 平分到各後端並行處理，再合併回應
+- Rerank 長文件切段：超過設定字元數的 document 切成重疊的多段分別算分，取最高分（`/v2/rerank` 與 `/decision/v2/rerank` 都支援）
 - Decision：整個 request 輪流分派到單一後端
 - 啟動與 reload 時實際打一次各後端 API，連不上的後端停用到下次 reload
 - `ai-gateway reload` 熱重載後端清單，進行中的 request 用舊清單完成

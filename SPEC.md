@@ -59,6 +59,9 @@ services:
 
   reranker:
     probe_model: null
+    chunking:                        # 選填，只有 reranker 可設；長文件切段（見 §5.4）
+      max_chars: 2000
+      overlap_chars: 200
     backends:
       - url: "http://127.0.0.1:12361"
         weight: 1                    # 範例採相同權重，可依後端容量調整
@@ -81,6 +84,7 @@ services:
     max_concurrency: null            # null = 不限制
     max_document_chars: null         # null = 不截斷
     use_fallback: true               # 失敗時整包改送 services.decision.fallback
+    chunking: null                   # 同 reranker 的 chunking；null = 不切段（見 §5.4、§6.4）
 ```
 
 - 每個 backend 可選填 `weight`（預設 1），用於拆分比例與輪流權重。
@@ -223,6 +227,19 @@ services:
 
 > **前提**：所有 reranker 後端跑同一個模型，`relevance_score` 可直接比較。
 
+### 5.4 長文件切段（`chunking`）
+
+設定 `services.reranker.chunking` 後，超過 `max_chars` 個字元的 document 會切成多段分別算分，該 document 的分數取各段的**最高分**。未設定則不切段。
+
+- **字元**以 Unicode 字元計算（中文一字算 1），不是 byte 也不是 token。
+- **切法**：每段 `max_chars` 字元，起點為 `0, step, 2·step, …`（`step = max_chars − overlap_chars`），直到涵蓋結尾；**最後一段對齊結尾、取滿 `max_chars`**，避免只剩幾個字的尾段（因此它與前一段的重疊可能超過 `overlap_chars`）。不超過 `max_chars` 的 document 不切。`overlap_chars` 預設 0，必須小於 `max_chars`。
+- **可切的 document**：字串，或含 `text` 字串的物件（其他欄位保留在每一段）；其他形態原樣送出。
+- **流程**：documents 展開成各段後，依 §5.2 的規則拆給各後端（即使只有一份 document、只有一個後端，有切段就必須合併）。合併時每段收回所屬的原始 document，`index` 為原始 index，分數取最高；若結果帶 `document`，`text` 換回原文。之後才排序、套用 `top_n`。
+- **子請求不帶 `top_n`**：同一份 document 的多段可能同時擠進前 n 名，§5.2 依各份前 n 名縮減的前提不成立。
+- **計量**：`meta.billed_units`、`usage` 照 §5.2 加總，反映實際送出的段數。
+- **Fallback**：任一份失敗而整包改送 fallback（§8.6）時，送出的是**原始、未切段**的 request；一般後端都不可用時也一樣。fallback 本來就是不同模型，且會自行處理長文件。
+- access log 另記 `chunks`（實際送出的段數，§9.1）。
+
 ### 5.3 Response（Cohere 格式）
 
 ```json
@@ -292,7 +309,7 @@ Jev（TypeSafe，`https://api.typesafe.ai/v1/systemone`）與 Clef 使用相同�
 
 - 設定：`services.decision_reranker`（§2）。沒有自己的後端，**共用 `services.decision` 的後端池**（權重、健康狀態、in-flight 統計、探測、fallback）；未設定時回 `404 {"message": "decision reranker is not configured"}`。可熱重載。
 - Request：`query`（字串）、`documents`（字串，或含 `text` 的物件）、`top_n`（`0` 視同未指定）；非標準欄位 `instructions` 可覆寫題目。`model`、`return_documents`、`max_tokens_per_doc` 忽略。超過 `max_documents` 回 400。
-- 每筆的 decision request：`{"state": <state_template 套入 query 與 document>, "questions": {"relevant": {"type": "noul", "instructions": ...}}}`，`model` 有設定才帶。`max_document_chars` 只截斷放進 state 的 document，回應中的 `document.text` 仍是原文。回應缺 `answers.relevant` 的 `noul` 答案視為無效回應（後端失敗）。
+- 每筆的 decision request：`{"state": <state_template 套入 query 與 document>, "questions": {"relevant": {"type": "noul", "instructions": ...}}}`，`model` 有設定才帶。`max_document_chars` 只截斷放進 state 的 document，回應中的 `document.text` 仍是原文。設定 `chunking` 時，截斷後的 document 再依 §5.4 的規則切段，**每一段一個 decision 呼叫**，該 document 的分數取各段最高分；`max_documents` 仍以原始 document 數計算，`max_concurrency` 與分派則以段為單位。回應缺 `answers.relevant` 的 `noul` 答案視為無效回應（後端失敗）。
 - 分派：每筆依權重平滑輪流交錯分給健康後端，同一 request 同時送出的呼叫數不超過 `max_concurrency`（不設則不限制）。單筆逾時沿用 decision 的 `request_timeout_ms`。
 - 重試：與 `/v1/systemone` 不同，這些 request 由 gateway 產生且沒有副作用，所以依 §8.3 的冪等規則在 5xx / 逾時 / 無效回應時改送其他後端。
 - 失敗：任一筆重試後仍失敗，整個 request 失敗（Cohere 錯誤格式，§8.5），不回傳部分結果。`use_fallback: true` 且 decision 有 fallback 時，**整個 request 的所有 document** 改送 fallback（Jev，分數尺度不同，不能與一般後端混排）；一般後端都不可用時也直接整包送 fallback。注意 fallback 每份 document 都是一次付費 API 呼叫。
@@ -304,7 +321,8 @@ Jev（TypeSafe，`https://api.typesafe.ai/v1/systemone`）與 Clef 使用相同�
    "usage": {"prompt_tokens": 4321}}
   ```
 
-  依分數由高到低排序（同分時 index 小者在前），再套用 `top_n`。`usage.prompt_tokens` 為各筆 `usage.input_tokens` 的總和（後端都沒回則省略）。access log 的 `items` 為 document 數。
+  依分數由高到低排序（同分時 index 小者在前），再套用 `top_n`。`usage.prompt_tokens` 為各筆（各段）`usage.input_tokens` 的總和（後端都沒回則省略）。access log 的 `items` 為 document 數，有切段時另記 `chunks`。
+- 有切段時 fallback（Jev）也照樣切段，每一段都是一次付費呼叫。
 
 ---
 
@@ -480,6 +498,7 @@ decision   (no change)
 | `method`、`path`、`status` | 回給 client 的狀態碼 |
 | `duration_ms` | gateway 收到 request 到送出回應 header 的時間；decision 以串流回傳，不含 body 傳輸 |
 | `items` | embedding 的 input 筆數、rerank 的 documents 筆數；decision 沒有此欄位 |
+| `chunks` | rerank 有 document 被切段時（§5.4），實際送出算分的段數；沒有切段則無此欄位 |
 | `backends` | 依序列出每次後端呼叫與結果，例如 `http://a:1 500, http://b:1 200`；結果為狀態碼或錯誤原因（`timeout`、`connect failed: ...`、`invalid response: ...`）。沒呼叫後端（例如 400、503）時為空字串 |
 | `fallback` | 是否呼叫過 fallback 後端 |
 

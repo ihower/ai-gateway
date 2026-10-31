@@ -350,6 +350,7 @@ mod tests {
             probe_model: None,
             backends: weights.iter().enumerate().map(|(i, w)| BackendConfig { url: format!("http://b{i}"), weight: *w }).collect(),
             fallback: None,
+            chunking: None,
         };
         let mut backends: Vec<Arc<Backend>> = cfg
             .backends

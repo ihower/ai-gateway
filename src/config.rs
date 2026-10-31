@@ -111,6 +111,8 @@ pub struct ServiceConfig {
     pub backends: Vec<BackendConfig>,
     /// 所有 `backends` 都失效時才使用的後端（SPEC §8.6）。
     pub fallback: Option<FallbackConfig>,
+    /// 長文件切段（SPEC §5.4）；只有 reranker 可設定。
+    pub chunking: Option<ChunkingConfig>,
 }
 
 impl ServiceConfig {
@@ -137,6 +139,24 @@ pub struct FallbackConfig {
     pub request_timeout_ms: Option<u64>,
 }
 
+/// rerank 的長文件切段：超過 `max_chars` 個字元的 document 切成多段分別算分，取最高分。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChunkingConfig {
+    pub max_chars: usize,
+    #[serde(default)]
+    pub overlap_chars: usize,
+}
+
+impl ChunkingConfig {
+    fn validate(&self, section: &str) -> anyhow::Result<()> {
+        if self.max_chars == 0 || self.overlap_chars >= self.max_chars {
+            bail!("{section}.chunking: max_chars must be at least 1 and overlap_chars must be less than max_chars");
+        }
+        Ok(())
+    }
+}
+
 /// `POST /decision/v2/rerank` 的設定：沒有自己的後端，共用 `services.decision` 的後端池。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -161,6 +181,9 @@ pub struct DecisionRerankerConfig {
     /// 一般後端失敗時，是否把整個 request 改送 `services.decision.fallback`。
     #[serde(default = "default_true")]
     pub use_fallback: bool,
+    /// 長文件切段，在 `max_document_chars` 截斷之後進行；`None` = 不切。
+    #[serde(default)]
+    pub chunking: Option<ChunkingConfig>,
 }
 
 impl DecisionRerankerConfig {
@@ -173,6 +196,9 @@ impl DecisionRerankerConfig {
         }
         if self.max_documents == 0 || self.max_concurrency == Some(0) || self.max_document_chars == Some(0) {
             bail!("services.decision_reranker: max_documents / max_concurrency / max_document_chars must be at least 1");
+        }
+        if let Some(c) = &self.chunking {
+            c.validate("services.decision_reranker")?;
         }
         Ok(())
     }
@@ -257,6 +283,8 @@ struct RawService {
     backends: Vec<BackendConfig>,
     #[serde(default)]
     fallback: Option<FallbackConfig>,
+    #[serde(default)]
+    chunking: Option<ChunkingConfig>,
     // service 層級可覆寫 defaults 的任一欄位
     connect_timeout_ms: Option<u64>,
     request_timeout_ms: Option<u64>,
@@ -302,7 +330,13 @@ impl RawService {
             }
             None => None,
         };
-        Ok(ServiceConfig { tuning, probe_model: self.probe_model, backends, fallback })
+        if let Some(c) = &self.chunking {
+            if kind != ServiceKind::Reranker {
+                bail!("services.{kind}.chunking is only supported for reranker");
+            }
+            c.validate(&format!("services.{kind}"))?;
+        }
+        Ok(ServiceConfig { tuning, probe_model: self.probe_model, backends, fallback, chunking: self.chunking })
     }
 }
 
@@ -422,7 +456,16 @@ services:
             .unwrap();
         let dr = c.decision_reranker.unwrap();
         assert_eq!((dr.max_concurrency, dr.use_fallback), (Some(4), false));
-        for bad in ["state_template: \"{query}\"", "max_concurrency: 0", "instructions: \" \"", "unknown: 1"] {
+        let c = parse(&format!("{SAMPLE}  decision_reranker:\n    chunking: {{max_chars: 10, overlap_chars: 2}}\n"), Path::new("c.yaml"))
+            .unwrap();
+        assert_eq!(c.decision_reranker.unwrap().chunking, Some(ChunkingConfig { max_chars: 10, overlap_chars: 2 }));
+        for bad in [
+            "state_template: \"{query}\"",
+            "max_concurrency: 0",
+            "instructions: \" \"",
+            "unknown: 1",
+            "chunking: {max_chars: 10, overlap_chars: 10}",
+        ] {
             assert!(parse(&format!("{SAMPLE}  decision_reranker:\n    {bad}\n"), Path::new("c.yaml")).is_err(), "{bad}");
         }
     }
@@ -443,5 +486,20 @@ services:
         assert!(parse(&dup_fallback, Path::new("c.yaml")).unwrap_err().to_string().contains("also listed"));
         let rerank_fallback = SAMPLE.replace("    request_timeout_ms: 5000\n", "    request_timeout_ms: 5000\n    fallback: {url: \"http://10.0.0.9:1\"}\n");
         assert_eq!(parse(&rerank_fallback, Path::new("c.yaml")).unwrap().reranker.fallback.unwrap().url, "http://10.0.0.9:1");
+    }
+
+    #[test]
+    fn parses_reranker_chunking() {
+        assert!(parse(SAMPLE, Path::new("c.yaml")).unwrap().reranker.chunking.is_none());
+        let with = |service: &str, chunking: &str| {
+            let anchor = format!("  {service}:\n");
+            SAMPLE.replace(&anchor, &format!("{anchor}    chunking: {chunking}\n"))
+        };
+        let c = parse(&with("reranker", "{max_chars: 2000}"), Path::new("c.yaml")).unwrap();
+        assert_eq!(c.reranker.chunking, Some(ChunkingConfig { max_chars: 2000, overlap_chars: 0 }));
+        assert!(parse(&with("reranker", "{max_chars: 0}"), Path::new("c.yaml")).is_err());
+        assert!(parse(&with("reranker", "{max_chars: 5, overlap_chars: 6}"), Path::new("c.yaml")).is_err());
+        let err = parse(&with("embedding", "{max_chars: 5}"), Path::new("c.yaml")).unwrap_err();
+        assert!(err.to_string().contains("only supported for reranker"), "{err}");
     }
 }

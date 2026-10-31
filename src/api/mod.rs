@@ -14,6 +14,7 @@ use bytes::Bytes;
 use serde_json::Value;
 
 use crate::backend::{ServicePool, split_sizes};
+use crate::config::ChunkingConfig;
 use crate::server::App;
 use crate::upstream::{Buffered, CallLog, Flavor, Forward, GatewayError, forward_streaming};
 
@@ -45,6 +46,31 @@ pub fn plan_chunks(svc: &ServicePool, n: usize) -> Result<Vec<Chunk>, GatewayErr
         }
     }
     Ok(chunks)
+}
+
+/// 依字元數切段（SPEC §5.4）：每段 `max_chars` 字元、相鄰兩段重疊 `overlap_chars` 字元；
+/// 最後一段對齊結尾、取滿 `max_chars`，避免只剩幾個字的尾段，因此它與前一段的重疊可能較多。
+/// 不超過 `max_chars` 的文字（含空字串）原樣成為唯一一段。
+pub fn split_text<'a>(text: &'a str, chunking: Option<&ChunkingConfig>) -> Vec<&'a str> {
+    let Some(c) = chunking else { return vec![text] };
+    // 各字元的 byte 位置，最後補上結尾，方便以字元索引切出子字串
+    let bounds: Vec<usize> = text.char_indices().map(|(i, _)| i).chain([text.len()]).collect();
+    let n = bounds.len() - 1;
+    if n <= c.max_chars {
+        return vec![text];
+    }
+    let step = c.max_chars - c.overlap_chars;
+    let mut starts: Vec<usize> = (0..).map(|k| k * step).take_while(|s| s + c.max_chars < n).collect();
+    starts.push(n - c.max_chars);
+    starts.into_iter().map(|s| &text[bounds[s]..bounds[s + c.max_chars]]).collect()
+}
+
+/// 截斷到前 `max_chars` 個字元；`None` = 不截斷。
+pub fn truncate_chars(text: &str, max_chars: Option<usize>) -> &str {
+    match max_chars.and_then(|n| text.char_indices().nth(n)) {
+        Some((i, _)) => &text[..i],
+        None => text,
+    }
 }
 
 /// 把 `b` 的數值加到 `a`（遞迴處理物件），用於合併 `usage`、`billed_units`。
@@ -104,6 +130,30 @@ pub async fn decision(State(app): State<Arc<App>>, Extension(log): Extension<Cal
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn splits_by_chars_with_overlap_and_end_aligned_tail() {
+        let c = ChunkingConfig { max_chars: 4, overlap_chars: 1 };
+        assert_eq!(split_text("abcdefghij", None), ["abcdefghij"]);
+        assert_eq!(split_text("", Some(&c)), [""]);
+        assert_eq!(split_text("abcd", Some(&c)), ["abcd"]);
+        // 起點 0、3，最後一段對齊結尾（起點 6）
+        assert_eq!(split_text("abcdefghij", Some(&c)), ["abcd", "defg", "ghij"]);
+        // 尾段不足 max_chars 時往前取滿：最後一段與前一段重疊 3 個字元
+        assert_eq!(split_text("abcdefgh", Some(&c)), ["abcd", "defg", "efgh"]);
+        assert_eq!(split_text("abcde", Some(&c)), ["abcd", "bcde"]);
+        // 以字元計算，不是 byte
+        assert_eq!(split_text("一二三四五六七", Some(&c)), ["一二三四", "四五六七"]);
+        let no_overlap = ChunkingConfig { max_chars: 3, overlap_chars: 0 };
+        assert_eq!(split_text("abcdefghi", Some(&no_overlap)), ["abc", "def", "ghi"]);
+    }
+
+    #[test]
+    fn truncates_by_chars() {
+        assert_eq!(truncate_chars("一二三", Some(2)), "一二");
+        assert_eq!(truncate_chars("一二三", Some(5)), "一二三");
+        assert_eq!(truncate_chars("abc", None), "abc");
+    }
 
     #[test]
     fn sums_nested_numbers() {

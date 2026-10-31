@@ -10,7 +10,7 @@ use bytes::Bytes;
 use futures::{StreamExt, TryStreamExt, stream};
 use serde_json::{Value, json};
 
-use super::{json_response, parse_object};
+use super::{json_response, parse_object, split_text, truncate_chars};
 use crate::backend::{ServicePool, smooth_wrr_schedule};
 use crate::config::DecisionRerankerConfig;
 use crate::server::App;
@@ -76,12 +76,8 @@ fn render_state(template: &str, query: &str, document: &str) -> String {
 }
 
 fn payload(cfg: &DecisionRerankerConfig, query: &str, document: &str, instructions: &str) -> Bytes {
-    let document = match cfg.max_document_chars {
-        Some(n) => document.chars().take(n).collect::<String>(),
-        None => document.to_string(),
-    };
     let mut body = json!({
-        "state": render_state(&cfg.state_template, query, &document),
+        "state": render_state(&cfg.state_template, query, document),
         "questions": {QUESTION: {"type": "noul", "instructions": instructions}},
     });
     if let Some(model) = &cfg.model {
@@ -150,14 +146,26 @@ async fn rerank(svc: &ServicePool, cfg: &DecisionRerankerConfig, fwd: Forward, b
     let n = req.documents.len();
     fwd.log.set_items(n);
     let instructions = req.instructions.as_deref().unwrap_or(&cfg.instructions);
-    let payloads: Vec<Bytes> = req.documents.iter().map(|d| payload(cfg, &req.query, d, instructions)).collect();
-    let limit = cfg.max_concurrency.unwrap_or(n).max(1);
+    // 先截斷再切段（SPEC §6.4）：每一段各是一個 decision 呼叫，owner[i] 是第 i 段所屬的 document
+    let mut owner = Vec::new();
+    let mut payloads = Vec::new();
+    for (i, doc) in req.documents.iter().enumerate() {
+        for piece in split_text(truncate_chars(doc, cfg.max_document_chars), cfg.chunking.as_ref()) {
+            owner.push(i);
+            payloads.push(payload(cfg, &req.query, piece, instructions));
+        }
+    }
+    let m = payloads.len();
+    if m > n {
+        fwd.log.set_chunks(m);
+    }
+    let limit = cfg.max_concurrency.unwrap_or(m).max(1);
     let fallback = svc.fallback().filter(|_| cfg.use_fallback);
 
-    let judgments = if n == 0 {
+    let judgments = if m == 0 {
         Vec::new()
     } else {
-        let assigned = assign_backends(svc, n);
+        let assigned = assign_backends(svc, m);
         if assigned.is_empty() {
             // 一般後端都不可用：整個 request 交給 fallback
             let fb = fallback.ok_or(GatewayError::NoBackend)?;
@@ -179,7 +187,12 @@ async fn rerank(svc: &ServicePool, cfg: &DecisionRerankerConfig, fwd: Forward, b
 
     let model = judgments.iter().find_map(|j| j.model.clone());
     let prompt_tokens = judgments.iter().filter_map(|j| j.input_tokens).reduce(|a, b| a + b);
-    let mut ranked: Vec<(usize, f64)> = judgments.iter().map(|j| j.score).enumerate().collect();
+    // 每份 document 的分數取其各段的最高分
+    let mut scores = vec![f64::NEG_INFINITY; n];
+    for (j, i) in judgments.iter().zip(&owner) {
+        scores[*i] = scores[*i].max(j.score);
+    }
+    let mut ranked: Vec<(usize, f64)> = scores.into_iter().enumerate().collect();
     ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
     if let Some(top_n) = req.top_n {
         ranked.truncate(top_n);

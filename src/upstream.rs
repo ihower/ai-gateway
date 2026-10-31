@@ -39,6 +39,7 @@ pub struct CallLog(Arc<Mutex<CallLogInner>>);
 #[derive(Default)]
 struct CallLogInner {
     items: Option<usize>,
+    chunks: Option<usize>,
     attempts: Vec<(String, String)>,
     fallback: bool,
 }
@@ -46,6 +47,11 @@ struct CallLogInner {
 impl CallLog {
     pub fn set_items(&self, n: usize) {
         self.0.lock().unwrap().items = Some(n);
+    }
+
+    /// rerank 切段後實際送出算分的段數（有文件被切開時才記錄）。
+    pub fn set_chunks(&self, n: usize) {
+        self.0.lock().unwrap().chunks = Some(n);
     }
 
     fn record(&self, backend: &Backend, outcome: String) {
@@ -62,11 +68,11 @@ impl CallLog {
         }
     }
 
-    /// (筆數, 「後端 結果」以逗號串接, 是否用到 fallback)
-    pub fn summary(&self) -> (Option<usize>, String, bool) {
+    /// (筆數, 段數, 「後端 結果」以逗號串接, 是否用到 fallback)
+    pub fn summary(&self) -> (Option<usize>, Option<usize>, String, bool) {
         let inner = self.0.lock().unwrap();
         let attempts = inner.attempts.iter().map(|(url, outcome)| format!("{url} {outcome}")).collect::<Vec<_>>().join(", ");
-        (inner.items, attempts, inner.fallback)
+        (inner.items, inner.chunks, attempts, inner.fallback)
     }
 }
 

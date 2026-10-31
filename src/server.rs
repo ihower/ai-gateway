@@ -102,7 +102,7 @@ async fn access(mut req: Request, next: Next) -> Response {
     let mut resp = next.run(req).await;
 
     if path != "/healthz" && path != "/readyz" {
-        let (items, backends, fallback) = log.summary();
+        let (items, chunks, backends, fallback) = log.summary();
         // decision 以串流回傳，duration 是收到後端回應 header 的時間
         tracing::info!(
             target: "access",
@@ -113,6 +113,7 @@ async fn access(mut req: Request, next: Next) -> Response {
             status = resp.status().as_u16(),
             duration_ms = started.elapsed().as_secs_f64() * 1000.0,
             items,
+            chunks,
             backends,
             fallback,
             "request"

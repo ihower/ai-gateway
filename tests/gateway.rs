@@ -79,8 +79,18 @@ async fn mock_rerank(State(m): State<Arc<Mock>>, axum::Json(req): axum::Json<Val
         return r;
     }
     m.pause().await;
-    let mut results: Vec<Value> =
-        docs.iter().enumerate().map(|(i, d)| json!({"index": i, "relevance_score": d.len() as f64 / 100.0})).collect();
+    let with_docs = req["return_documents"] == true;
+    let mut results: Vec<Value> = docs
+        .iter()
+        .enumerate()
+        .map(|(i, d)| {
+            let mut r = json!({"index": i, "relevance_score": d.len() as f64 / 100.0});
+            if with_docs {
+                r["document"] = json!({"text": d});
+            }
+            r
+        })
+        .collect();
     results.sort_by(|a, b| b["relevance_score"].as_f64().partial_cmp(&a["relevance_score"].as_f64()).unwrap());
     if let Some(n) = req["top_n"].as_u64() {
         results.truncate(n as usize);
@@ -511,6 +521,70 @@ async fn decision_falls_back_when_backends_unavailable() {
     assert_eq!(mf.hits.load(Ordering::Relaxed), 1);
 }
 
+/// 在 `services.<service>` 底下加上 `chunking` 設定。
+fn with_chunking(yaml: String, service: &str, chunking: &str) -> String {
+    let anchor = format!("  {service}:\n");
+    yaml.replace(&anchor, &format!("{anchor}    chunking: {chunking}\n"))
+}
+
+// 「aaaa一一一一」共 8 個字元，以 4 / 重疊 1 切成「aaaa」「a一一一」「一一一一」；
+// 假後端以 byte 數為分數，三段分別是 0.04、0.10、0.12，取最高分應為 0.12（不切則是 16 bytes 的 0.16）
+const MIXED: &str = "aaaa一一一一";
+
+#[tokio::test]
+async fn rerank_chunks_long_documents_and_takes_max() {
+    let (u1, m1) = spawn_mock(1).await;
+    let (u2, m2) = spawn_mock(2).await;
+    let (fb, mf) = spawn_mock(9).await;
+    let (gw, _) = start_gateway(|d| {
+        let yaml = with_fallback_on(config_yaml(d, &[&u1], &[&u1, &u2], &[&u1]), "reranker", &fb);
+        with_chunking(yaml, "reranker", "{max_chars: 4, overlap_chars: 1}")
+    })
+    .await;
+    let url = format!("{}/v2/rerank", gw.url);
+    let body = json!({"query": "q", "documents": ["aaa", MIXED, "aa", "aaaaaaa"], "top_n": 2, "return_documents": true});
+    let resp = reqwest::Client::new().post(&url).header("x-request-id", "log-chunks").json(&body).send().await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let out: Value = resp.json().await.unwrap();
+    // top_n 在收回原始 document 之後才套用；document 換回原文
+    assert_eq!(
+        out["results"],
+        json!([
+            {"index": 1, "relevance_score": 0.12, "document": {"text": MIXED}},
+            {"index": 3, "relevance_score": 0.04, "document": {"text": "aaaaaaa"}}
+        ])
+    );
+    // 1 + 3 + 1 + 2 = 7 段，依權重分給兩台
+    assert_eq!((m1.hits.load(Ordering::Relaxed), m2.hits.load(Ordering::Relaxed)), (1, 1));
+    let f = access_line("log-chunks");
+    assert_eq!((f["items"].as_u64(), f["chunks"].as_u64()), (Some(4), Some(7)));
+
+    // 只有一份 document 也會切段、合併
+    let (status, out) = post_json(&url, json!({"query": "q", "documents": [MIXED]})).await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+    assert_eq!(out["results"], json!([{"index": 0, "relevance_score": 0.12}]));
+
+    // 沒有 document 需要切時照舊，access log 不記 chunks
+    let resp = reqwest::Client::new()
+        .post(&url)
+        .header("x-request-id", "log-no-chunks")
+        .json(&json!({"query": "q", "documents": ["a", "aa"]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(access_line("log-no-chunks").get("chunks").is_none());
+
+    // 兩台都失敗：整個原始 request（未切段）改送 fallback
+    m1.mode.store(FAIL, Ordering::Relaxed);
+    m2.mode.store(FAIL, Ordering::Relaxed);
+    let (status, out) = post_json(&url, body).await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+    assert_eq!(out["id"], json!("mock-9"));
+    assert_eq!(out["results"][0]["relevance_score"], json!(0.16));
+    assert_eq!(mf.hits.load(Ordering::Relaxed), 1);
+}
+
 /// 在設定檔末尾（`services` 底下）加上 `decision_reranker` 區塊。
 fn with_decision_reranker(yaml: String, body: &str) -> String {
     format!("{yaml}  decision_reranker:\n{body}")
@@ -614,6 +688,44 @@ async fn decision_rerank_falls_back_with_whole_request() {
     assert_eq!(status, StatusCode::BAD_GATEWAY, "{out}");
     assert!(out["message"].is_string());
     assert_eq!(mf.hits.load(Ordering::Relaxed), 3);
+}
+
+#[tokio::test]
+async fn decision_rerank_chunks_after_truncation_and_takes_max() {
+    let (u1, m1) = spawn_mock(1).await;
+    let (u2, m2) = spawn_mock(2).await;
+    let (fb, mf) = spawn_mock(9).await;
+    let (gw, _) = start_gateway(|d| {
+        let yaml = with_fallback_on(config_yaml(d, &[&u1], &[&u1], &[&u1, &u2]), "decision", &fb);
+        with_decision_reranker(yaml, "    max_document_chars: 8\n    chunking: {max_chars: 4, overlap_chars: 1}\n")
+    })
+    .await;
+    let url = format!("{}/decision/v2/rerank", gw.url);
+    // 第 2 份先截斷成前 8 個字元（MIXED）再切段
+    let long = format!("{MIXED}bbbbbbbb");
+    let body = json!({"query": "q", "documents": ["aaa", long, "a"]});
+    let (status, out) = post_json(&url, body.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+    assert_eq!(
+        out["results"],
+        json!([
+            {"index": 1, "relevance_score": 0.12, "document": {"text": long}},
+            {"index": 0, "relevance_score": 0.03, "document": {"text": "aaa"}},
+            {"index": 2, "relevance_score": 0.01, "document": {"text": "a"}}
+        ])
+    );
+    // 1 + 3 + 1 = 5 段，每段一個 decision 呼叫
+    assert_eq!(m1.hits.load(Ordering::Relaxed) + m2.hits.load(Ordering::Relaxed), 5);
+    assert_eq!(out["usage"], json!({"prompt_tokens": 50}));
+
+    // 兩台都失敗：fallback 也照樣切段
+    m1.mode.store(FAIL, Ordering::Relaxed);
+    m2.mode.store(FAIL, Ordering::Relaxed);
+    let (status, out) = post_json(&url, body).await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+    assert_eq!(out["model"], json!("mock-9"));
+    assert_eq!(out["results"][0], json!({"index": 1, "relevance_score": 0.12, "document": {"text": long}}));
+    assert_eq!(mf.hits.load(Ordering::Relaxed), 5);
 }
 
 /// 收集 tracing 輸出（JSON），供檢查 access log。
