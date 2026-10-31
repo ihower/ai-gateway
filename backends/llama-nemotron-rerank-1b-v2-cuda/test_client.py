@@ -77,7 +77,8 @@ def main() -> int:
         if alone.status_code == 200 and mixed.status_code == 200:
             a = {x["index"]: x["relevance_score"] for x in alone.json()["results"]}
             m = {x["index"]: x["relevance_score"] for x in mixed.json()["results"]}
-            same = abs(a[0] - m[0]) < 1e-3 and abs(a[1] - m[2]) < 1e-3
+            # bf16 下 batch 組成不同時分數會有約 0.005 的雜訊，容忍度取 1e-2（約 0.1 logit）
+            same = abs(a[0] - m[0]) < 1e-2 and abs(a[1] - m[2]) < 1e-2
             check(
                 "截斷只影響超長那份：3 份都有分數，短文件分數不變",
                 len(m) == 3 and same,
