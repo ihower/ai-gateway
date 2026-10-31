@@ -14,7 +14,7 @@ use crate::upstream::classify;
 fn probe_request(kind: ServiceKind, model: Option<&str>) -> (&'static str, Value, &'static str) {
     let (path, mut body, key) = match kind {
         ServiceKind::Embedding => ("/v1/embeddings", json!({"input": "ping"}), "data"),
-        ServiceKind::Reranker => ("/v1/rerank", json!({"query": "ping", "documents": ["ping"]}), "results"),
+        ServiceKind::Reranker => ("/v2/rerank", json!({"query": "ping", "documents": ["ping"]}), "results"),
         ServiceKind::Decision => (
             "/v1/systemone",
             json!({"state": "ping", "questions": {"probe": {"type": "noul", "instructions": "Is this a test?"}}}),

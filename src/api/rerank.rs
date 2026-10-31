@@ -1,4 +1,4 @@
-//! `POST /v1/rerank`、`POST /v2/rerank`（Cohere 格式，SPEC §5）。
+//! `POST /v2/rerank`（Cohere v2 格式，SPEC §5）。
 
 use std::sync::Arc;
 

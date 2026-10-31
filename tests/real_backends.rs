@@ -228,17 +228,16 @@ async fn rerank_requests() {
     let before = env.requests(ServiceKind::Reranker);
 
     let cases = [
-        ("v1 all docs", "/v1/rerank", json!({"query": QUERY, "documents": DOCS})),
-        ("v2 all docs", "/v2/rerank", json!({"query": QUERY, "documents": DOCS})),
-        ("top_n 3", "/v1/rerank", json!({"query": QUERY, "documents": DOCS, "top_n": 3})),
+        ("all docs", "/v2/rerank", json!({"query": QUERY, "documents": DOCS})),
+        ("top_n 3", "/v2/rerank", json!({"query": QUERY, "documents": DOCS, "top_n": 3})),
         ("top_n 1", "/v2/rerank", json!({"query": QUERY, "documents": DOCS, "top_n": 1})),
-        ("top_n 0", "/v1/rerank", json!({"query": QUERY, "documents": DOCS, "top_n": 0})),
-        ("top_n > docs", "/v1/rerank", json!({"query": QUERY, "documents": DOCS, "top_n": 20})),
-        ("return_documents", "/v1/rerank", json!({"query": QUERY, "documents": DOCS, "return_documents": true})),
+        ("top_n 0", "/v2/rerank", json!({"query": QUERY, "documents": DOCS, "top_n": 0})),
+        ("top_n > docs", "/v2/rerank", json!({"query": QUERY, "documents": DOCS, "top_n": 20})),
+        ("return_documents", "/v2/rerank", json!({"query": QUERY, "documents": DOCS, "return_documents": true})),
         ("return_documents false", "/v2/rerank", json!({"query": QUERY, "documents": DOCS, "return_documents": false})),
-        ("with model", "/v1/rerank", json!({"model": "nvidia/llama-nemotron-rerank-1b-v2", "query": QUERY, "documents": DOCS})),
-        ("2 docs", "/v1/rerank", json!({"query": QUERY, "documents": &DOCS[..2]})),
-        ("single doc", "/v1/rerank", json!({"query": QUERY, "documents": [DOCS[1]]})),
+        ("with model", "/v2/rerank", json!({"model": "nvidia/llama-nemotron-rerank-1b-v2", "query": QUERY, "documents": DOCS})),
+        ("2 docs", "/v2/rerank", json!({"query": QUERY, "documents": &DOCS[..2]})),
+        ("single doc", "/v2/rerank", json!({"query": QUERY, "documents": [DOCS[1]]})),
     ];
     for (label, path, body) in cases {
         let directs = env.direct_all(ServiceKind::Reranker, path, &body).await;
@@ -297,8 +296,8 @@ async fn rerank_requests() {
         ("unknown model", json!({"model": "nope", "query": QUERY, "documents": DOCS})),
     ];
     for (label, body) in errors {
-        let (dstatus, direct) = env.post(&env.backends(ServiceKind::Reranker)[0], "/v1/rerank", &body).await;
-        let (status, gw) = env.via("/v1/rerank", &body).await;
+        let (dstatus, direct) = env.post(&env.backends(ServiceKind::Reranker)[0], "/v2/rerank", &body).await;
+        let (status, gw) = env.via("/v2/rerank", &body).await;
         assert_eq!(status, dstatus, "{label}: {gw}");
         assert_eq!(keys(&gw), keys(&direct), "{label}: error keys");
         println!("ok  rerank     error {label:<18} HTTP {}", status.as_u16());

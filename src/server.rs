@@ -71,7 +71,6 @@ impl App {
 pub fn router(app: Arc<App>) -> Router {
     Router::new()
         .route("/v1/embeddings", post(api::embeddings::handle))
-        .route("/v1/rerank", post(api::rerank::handle))
         .route("/v2/rerank", post(api::rerank::handle))
         .route("/v1/systemone", post(api::decision))
         .route("/healthz", get(healthz))

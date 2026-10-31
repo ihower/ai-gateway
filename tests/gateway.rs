@@ -97,7 +97,6 @@ async fn spawn_mock(id: u64) -> (String, Arc<Mock>) {
     let mock = Arc::new(Mock { id, hits: AtomicUsize::new(0), mode: AtomicU64::new(OK), delay_ms: AtomicU64::new(0) });
     let app = Router::new()
         .route("/v1/embeddings", post(mock_embeddings))
-        .route("/v1/rerank", post(mock_rerank))
         .route("/v2/rerank", post(mock_rerank))
         .route("/v1/systemone", post(mock_decision))
         .with_state(mock.clone());
@@ -232,17 +231,15 @@ async fn rerank_merges_by_score_with_top_n() {
     let (u2, m2) = spawn_mock(2).await;
     let (gw, _) = start_gateway(|d| config_yaml(d, &[&u1], &[&u1, &u2], &[&u1])).await;
     let docs = ["aaa", "a", "aaaaa", "aa", "aaaa"];
-    for path in ["/v1/rerank", "/v2/rerank"] {
-        let (status, body) =
-            post_json(&format!("{}{path}", gw.url), json!({"query": "q", "documents": docs, "top_n": 3})).await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        let idx: Vec<u64> = body["results"].as_array().unwrap().iter().map(|r| r["index"].as_u64().unwrap()).collect();
-        assert_eq!(idx, vec![2, 4, 0]);
-        assert_eq!(body["meta"]["billed_units"]["search_units"], json!(2));
-        assert!(!body["id"].as_str().unwrap().starts_with("mock-"));
-    }
-    assert_eq!(m1.hits.load(Ordering::Relaxed), 2);
-    assert_eq!(m2.hits.load(Ordering::Relaxed), 2);
+    let (status, body) =
+        post_json(&format!("{}/v2/rerank", gw.url), json!({"query": "q", "documents": docs, "top_n": 3})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let idx: Vec<u64> = body["results"].as_array().unwrap().iter().map(|r| r["index"].as_u64().unwrap()).collect();
+    assert_eq!(idx, vec![2, 4, 0]);
+    assert_eq!(body["meta"]["billed_units"]["search_units"], json!(2));
+    assert!(!body["id"].as_str().unwrap().starts_with("mock-"));
+    assert_eq!(m1.hits.load(Ordering::Relaxed), 1);
+    assert_eq!(m2.hits.load(Ordering::Relaxed), 1);
 }
 
 #[tokio::test]
@@ -446,7 +443,7 @@ async fn rerank_falls_back_with_whole_request() {
     let (fb, mf) = spawn_mock(9).await;
     let (gw, _) = start_gateway(|d| with_fallback_on(config_yaml(d, &[&u1], &[&u1, &u2], &[&u1]), "reranker", &fb)).await;
     assert!(gw.app.pool.load().embedding.fallback().is_none());
-    let url = format!("{}/v1/rerank", gw.url);
+    let url = format!("{}/v2/rerank", gw.url);
     let body = json!({"query": "q", "documents": ["aaa", "a", "aaaaa", "aa"], "top_n": 2});
 
     let (status, out) = post_json(&url, body.clone()).await;

@@ -102,8 +102,8 @@ needs_jev = pytest.mark.skipif(not server.os.environ.get("JEV_API_KEY"), reason=
 
 
 @needs_cohere
-@pytest.mark.parametrize("path", ["/v1/rerank", "/v2/rerank"])
-def test_rerank_via_cohere(path):
+def test_rerank_via_cohere():
+    path = "/v2/rerank"
     body = {"model": "nvidia/llama-nemotron-rerank-1b-v2", "query": "capital of France", "documents": DOCS, "top_n": 2}
     r = client.post(path, json=body, headers={"Authorization": "Bearer client-token"})
     assert r.status_code == 200, r.text
@@ -124,7 +124,7 @@ def test_rerank_via_cohere(path):
 
 @needs_cohere
 def test_rerank_client_error_passes_through():
-    r = client.post("/v1/rerank", json={"query": "q", "documents": []})
+    r = client.post("/v2/rerank", json={"query": "q", "documents": []})
     assert r.status_code == 400
     assert "message" in r.json()
 
@@ -161,7 +161,7 @@ def test_upstream_failures_become_gateway_errors(monkeypatch):
     monkeypatch.setattr(server, "http", httpx.AsyncClient(transport=httpx.MockTransport(handler)))
     monkeypatch.setenv("COHERE_API_KEY", "test-key")
     monkeypatch.setenv("JEV_API_KEY", "test-key")
-    r = client.post("/v1/rerank", json={"query": "q", "documents": ["a"]})
+    r = client.post("/v2/rerank", json={"query": "q", "documents": ["a"]})
     assert r.status_code == 502 and "HTTP 503" in r.json()["error"]["message"]
     r = client.post("/v1/systemone", json={"state": "x", "questions": {}})
     assert r.status_code == 502

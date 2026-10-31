@@ -5,7 +5,7 @@
 | 服務 | 對外格式 | 分流策略 |
 |------|----------|----------|
 | Embedding | OpenAI `/v1/embeddings` | 多筆 input **平分**到各後端，合併回應 |
-| Reranker | Cohere `/v1/rerank`、`/v2/rerank` | documents **平分**到各後端，依分數合併排序 |
+| Reranker | Cohere v2 `/v2/rerank` | documents **平分**到各後端，依分數合併排序 |
 | Decision | Jev 格式（= Clef SystemOne，`/v1/systemone`） | 整個 request **輪流**分派到單一後端 |
 
 ---
@@ -88,7 +88,6 @@ services:
 | Method | Path | 說明 |
 |--------|------|------|
 | POST | `/v1/embeddings` | OpenAI 格式 embedding |
-| POST | `/v1/rerank` | Cohere v1 格式 rerank |
 | POST | `/v2/rerank` | Cohere v2 格式 rerank |
 | POST | `/v1/systemone` | Decision API（Jev / SystemOne 格式，見 §6） |
 | GET  | `/healthz` | Liveness，永遠回 `200 {"status":"ok"}`（draining 時回 `503`） |
@@ -177,7 +176,7 @@ services:
 
 ---
 
-## 5. Reranker API — `POST /v1/rerank`、`POST /v2/rerank`
+## 5. Reranker API — `POST /v2/rerank`
 
 ### 5.1 Request（Cohere 格式）
 
@@ -192,8 +191,8 @@ services:
 }
 ```
 
-- `documents` 可為字串陣列；v1 亦接受 `{"text": "..."}` 物件陣列，原樣轉送。
-- v1 / v2 的路徑原樣轉送到後端（`/v1/rerank` → 後端 `/v1/rerank`）。
+- 只支援 Cohere v2：`documents` 為字串陣列（v1 的 `/v1/rerank` 已移除）。
+- 轉送到後端的 `/v2/rerank`。
 
 ### 5.2 分流規則
 
@@ -377,7 +376,7 @@ decision   (no change)
 | Service | 探測請求 |
 |---------|----------|
 | embedding | `POST /v1/embeddings` `{"input": "ping"}` |
-| reranker | `POST /v1/rerank` `{"query": "ping", "documents": ["ping"]}` |
+| reranker | `POST /v2/rerank` `{"query": "ping", "documents": ["ping"]}` |
 | decision | `POST /v1/systemone` `{"state": "ping", "questions": {"probe": {"type": "noul", "instructions": "Is this a test?"}}}` |
 
 - 若該 service 設定了 `probe_model`，請求中加上 `"model": <probe_model>`

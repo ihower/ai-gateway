@@ -5,7 +5,7 @@
   - `dimensions` 只接受 256 / 512 / 1024 / 2048（Matryoshka），截斷後重新正規化
   - `encoding_format` 支援 `float` 與 `base64`（little-endian float32）
   - `usage.prompt_tokens` 含 prompt 前綴的 token 數
-- `POST /v1/rerank`、`/v2/rerank`：轉送 Cohere Rerank API（`rerank-v4.0-fast`），回應改成 vLLM 的形狀
+- `POST /v2/rerank`：轉送 Cohere Rerank API（`rerank-v4.0-fast`），回應改成 vLLM 的形狀
 - `POST /v1/systemone`：轉送 TypeSafe 的 Jev API（SystemOne 格式，`jev-1.14.0`）
 
 雲端 API 的 key 讀自同目錄的 `.env`（`COHERE_API_KEY`、`JEV_API_KEY`）；client 帶的 Authorization 不會轉送。
@@ -178,7 +178,6 @@ def passthrough(resp: httpx.Response) -> Response:
     return Response(resp.content, resp.status_code, media_type=resp.headers.get("content-type", "application/json"))
 
 
-@app.post("/v1/rerank")
 @app.post("/v2/rerank")
 async def rerank(body: dict):
     """轉送 Cohere v2 rerank。回應與 vLLM 對齊：results 一律帶 `document.text`、`model` 為實際模型；

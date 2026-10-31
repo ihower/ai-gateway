@@ -69,7 +69,7 @@ RUST_LOG=info,access=off ./ai-gateway serve              # 關閉 access log
 | Method | Path | 說明 |
 |--------|------|------|
 | POST | `/v1/embeddings` | OpenAI 格式 embedding |
-| POST | `/v1/rerank`、`/v2/rerank` | Cohere 格式 rerank |
+| POST | `/v2/rerank` | Cohere v2 格式 rerank |
 | POST | `/v1/systemone` | Decision（Jev / SystemOne 格式） |
 | GET | `/healthz`、`/readyz` | 健康檢查 |
 | GET | `/admin/backends`、`/admin/config`、`/metrics` | 管理埠（唯讀） |
