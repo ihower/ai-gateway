@@ -12,13 +12,14 @@ MODEL="${MODEL:-nvidia/llama-nemotron-rerank-1b-v2}"
 HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-12361}"
 DTYPE="${DTYPE:-auto}"
-# 直接指定 KV cache 大小（每 token 約 32KB）。rerank 序列一步就算完，同時存活的 token 數
-# 受 max_num_batched_tokens（此 GPU 預設 8192，約 256MB）限制，512M 已留兩倍餘裕
-KV_CACHE_MEMORY_BYTES="${KV_CACHE_MEMORY_BYTES:-512M}"
-# 設定 KV_CACHE_MEMORY_BYTES 後此比例不影響分配，但 vLLM 啟動時仍會檢查剩餘記憶體是否大於「總量 × 此比例」
-GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.4}"
-# 模型官方支援 8192 tokens；config 的 131072 只是沿用 Llama 3.2 的 RoPE 設定
-MAX_MODEL_LEN="${MAX_MODEL_LEN:-8192}"
+# 直接指定 KV cache 大小（每 token 32KiB）。128M（大寫 M = MiB）剛好容納 4096 tokens，
+# 即一組 max_model_len 的序列；調高 MAX_MODEL_LEN 時要一併調高（每 4096 tokens 128M）
+KV_CACHE_MEMORY_BYTES="${KV_CACHE_MEMORY_BYTES:-128M}"
+# 設定 KV_CACHE_MEMORY_BYTES 後此比例不影響分配，只用於 vLLM 啟動時檢查「剩餘記憶體 ≥ 總量 × 此比例」
+# 實際用量約 權重 2.3GB + KV 128MB + 運算空間，16GB GPU 取 0.2（約 3.2GB）
+GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.2}"
+# 每組 query + 文件取 4096 tokens（模型官方上限 8192；config 的 131072 只是沿用 Llama 3.2 的 RoPE 設定）
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-4096}"
 CHAT_TEMPLATE="${CHAT_TEMPLATE:-$SCRIPT_DIR/nemotron-rerank.jinja}"
 
 # 解析 --gpu / --port（支援 `--opt 值` 與 `--opt=值`），其餘參數原樣傳給 vllm serve

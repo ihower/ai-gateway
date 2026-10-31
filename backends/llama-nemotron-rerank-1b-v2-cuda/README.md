@@ -3,7 +3,7 @@
 使用 [vLLM](https://github.com/vllm-project/vllm) 將 [nvidia/llama-nemotron-rerank-1b-v2](https://huggingface.co/nvidia/llama-nemotron-rerank-1b-v2) 部署為 reranker HTTP API（Cohere / Jina 相容的 `/rerank`）。
 
 - 模型：Llama-3.2-1B 改為雙向注意力的 cross-encoder，mean pooling + 二元分類 head
-- 每組 query + 文件上限 **8192 tokens**，超過時**預設自動截斷**（不會回錯誤）
+- 每組 query + 文件上限 **4096 tokens**，超過時**預設自動截斷**（不會回錯誤）
 - 授權：OpenMDW-1.1，另適用 Llama 3.2 Community License
 
 ## 需求
@@ -40,9 +40,9 @@ PORT=8000 KV_CACHE_MEMORY_BYTES=1G ./start.sh --max-num-batched-tokens 16384
 | `HOST` | `0.0.0.0` | 監聽位址 |
 | `PORT` | `12361` | 監聽 port |
 | `DTYPE` | `auto` | `auto` 即 BF16 |
-| `MAX_MODEL_LEN` | `8192` | 每組 query + 文件的 token 上限（模型官方上限） |
-| `KV_CACHE_MEMORY_BYTES` | `512M` | 固定 KV cache 大小（見[記憶體](#gpu-記憶體)） |
-| `GPU_MEMORY_UTILIZATION` | `0.4` | 僅作為 vLLM 啟動時的剩餘記憶體檢查門檻 |
+| `MAX_MODEL_LEN` | `4096` | 每組 query + 文件的 token 上限（模型官方上限 8192） |
+| `KV_CACHE_MEMORY_BYTES` | `128M` | 固定 KV cache 大小，剛好容納 4096 tokens；調高 `MAX_MODEL_LEN` 時需一併調高（見[記憶體](#gpu-記憶體)） |
+| `GPU_MEMORY_UTILIZATION` | `0.2` | 僅作為 vLLM 啟動時的剩餘記憶體檢查門檻 |
 | `CHAT_TEMPLATE` | `nemotron-rerank.jinja` | score template，**必要**，缺少時分數錯誤 |
 | `VLLM_PROCESS_NAME_PREFIX` | `nemotron-rerank` | 程序名稱前綴，顯示為 `nemotron-rerank::EngineCore` |
 
@@ -172,9 +172,9 @@ NVIDIA 官方只提供 BF16 權重。`start_fp8.sh` 讓 vLLM 在載入時動態�
 
 vLLM 啟動時一定會預先配置固定大小的 GPU 記憶體。本專案以 `--kv-cache-memory-bytes` 直接指定 KV cache 大小，而非依 GPU 總量比例配置，方便與其他服務共用 GPU：
 
-- 實際用量約為：權重（FP8 1.4 GB／BF16 2.3 GB）+ KV cache（預設 512M）+ 運算空間
+- 實際用量約為：權重（FP8 1.4 GB／BF16 2.3 GB）+ KV cache（預設 128M = 4096 tokens × 32 KiB）+ 運算空間
 - rerank 的序列做一次 forward 就結束，KV cache 只是 attention 計算的暫存空間，不會跨請求重用
-- 同時處理量受 `max_num_batched_tokens` 限制（16 GB GPU 預設 8192 tokens/step，約需 256 MB KV cache），一次送 100 份文件會自動拆成多個 step 依序計算
+- 每個 step 同時處理的 token 數受 KV cache 容量限制（128M 約 4096 tokens/step），一次送 100 份文件會自動拆成多個 step 依序計算
 - `GPU_MEMORY_UTILIZATION` 不影響實際配置，但 vLLM 啟動時仍會檢查「剩餘記憶體 ≥ 總量 × 此比例」，GPU 被其他程式佔用較多時可調低
 
 ## 注意事項
@@ -182,8 +182,8 @@ vLLM 啟動時一定會預先配置固定大小的 GPU 記憶體。本專案以 
 - **score template 必要**：`nemotron-rerank.jinja` 將輸入組成 `question:{query} \n \n passage:{document}`，缺少時不會報錯但分數錯誤。
 - **Python 3.13.8 無法啟動**：Python 3.13.8 的 `inspect.getsourcelines` 有 bug，造成 vLLM 啟動時 Triton kernel 解析失敗（`'NoneType' object has no attribute 'start'`），因此固定使用 Python 3.12。
 - **`top_k` 會被靜默忽略**：vLLM 允許未知欄位，只在 server log 印警告，結果會回傳全部文件。請使用 `top_n`。
-- **`MAX_MODEL_LEN` 不要調高**：模型 config 的 `max_position_embeddings=131072` 只是沿用 Llama 3.2 的 RoPE 設定，模型官方支援上限為 8192。
-- **token 估算**：中文約 1.5 字元／token，英文約 4 字元／token；8192 tokens 約 1.2 萬個中文字。
+- **`MAX_MODEL_LEN` 最多 8192**：模型 config 的 `max_position_embeddings=131072` 只是沿用 Llama 3.2 的 RoPE 設定，模型官方支援上限為 8192。調到 8192 時 `KV_CACHE_MEMORY_BYTES` 需改為 `256M`。
+- **token 估算**：中文約 1.5 字元／token，英文約 4 字元／token；4096 tokens 約 6000 個中文字。
 
 ## 測試
 
