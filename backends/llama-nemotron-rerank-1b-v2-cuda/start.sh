@@ -21,6 +21,10 @@ GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.2}"
 # 每組 query + 文件取 4096 tokens（模型官方上限 8192；config 的 131072 只是沿用 Llama 3.2 的 RoPE 設定）
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-4096}"
 CHAT_TEMPLATE="${CHAT_TEMPLATE:-$SCRIPT_DIR/nemotron-rerank.jinja}"
+# 分數校準：relevance_score = sigmoid(logit / 4)。高相關文件的 logit 常在 17～22，原本的 sigmoid
+# 在 float32 會全部變成 1.0；除以 4 後要到 logit 約 68 才飽和，排序與原始 logit 一致，0.5 分界不變。
+# 設為空字串可回到 vLLM 預設（sigmoid(logit)）
+POOLER_CONFIG="${POOLER_CONFIG-{\"logit_sigma\": 4.0\}}"
 
 # 解析 --gpu / --port（支援 `--opt 值` 與 `--opt=值`），其餘參數原樣傳給 vllm serve
 VLLM_ARGS=()
@@ -52,6 +56,10 @@ export VLLM_PROCESS_NAME_PREFIX="${VLLM_PROCESS_NAME_PREFIX:-nemotron-rerank}"
 
 # 讓 vLLM 能 import 專案目錄下的 rerank_middleware
 export PYTHONPATH="$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
+
+if [[ -n "$POOLER_CONFIG" ]]; then
+  VLLM_ARGS=(--pooler-config "$POOLER_CONFIG" "${VLLM_ARGS[@]}")
+fi
 
 exec uv run --project "$SCRIPT_DIR" vllm serve "$MODEL" \
   --host "$HOST" \

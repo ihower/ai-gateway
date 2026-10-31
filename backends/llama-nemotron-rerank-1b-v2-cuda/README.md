@@ -44,6 +44,7 @@ PORT=8000 KV_CACHE_MEMORY_BYTES=1G ./start.sh --max-num-batched-tokens 16384
 | `KV_CACHE_MEMORY_BYTES` | `128M` | 固定 KV cache 大小，剛好容納 4096 tokens；調高 `MAX_MODEL_LEN` 時需一併調高（見[記憶體](#gpu-記憶體)） |
 | `GPU_MEMORY_UTILIZATION` | `0.2` | 僅作為 vLLM 啟動時的剩餘記憶體檢查門檻 |
 | `CHAT_TEMPLATE` | `nemotron-rerank.jinja` | score template，**必要**，缺少時分數錯誤 |
+| `POOLER_CONFIG` | `{"logit_sigma": 4.0}` | 傳給 `--pooler-config`，分數校準為 `sigmoid(logit / 4)`（見[分數校準](#分數校準)）；設為空字串回到 vLLM 預設 |
 | `VLLM_PROCESS_NAME_PREFIX` | `nemotron-rerank` | 程序名稱前綴，顯示為 `nemotron-rerank::EngineCore` |
 
 ## API
@@ -90,7 +91,7 @@ curl http://localhost:12361/rerank -H 'Content-Type: application/json' -d '{
 | `truncate_prompt_tokens` | `-1`（由 middleware 補上） | 每組 query + 文件的 token 上限，`-1` 為 `MAX_MODEL_LEN`；傳 `null` 可關閉截斷 |
 | `max_tokens_per_doc` | `0`（不限制） | 只限制文件內容的 token 數（Cohere 相容），必須小於 `MAX_MODEL_LEN` |
 | `max_tokens_per_query` | `0`（不限制） | 只限制 query 的 token 數 |
-| `use_activation` | `true` | `true` 回傳 sigmoid 後的 0～1 分數；`false` 回傳模型原始 logit |
+| `use_activation` | `true` | `true` 回傳校準後的 0～1 分數 `sigmoid(logit / 4)`；`false` 回傳 `logit / 4`（未經 sigmoid） |
 
 ### `POST /score`
 
@@ -127,6 +128,25 @@ r = httpx.post(
 for item in r.json()["results"]:
     print(item["index"], item["relevance_score"])
 ```
+
+## 分數校準
+
+vLLM 預設回傳 `sigmoid(logit)`，在 float32 下 logit 超過約 17 就剛好等於 `1.0`。這個模型對高相關文件的 logit 常在 17～22，實測一組 14 份同主題的研究報告，有 13 份都是 `1.0`，無法排出先後。
+
+因此 `start.sh` 預設以 `--pooler-config '{"logit_sigma": 4.0}'` 啟動，回傳 `sigmoid(logit / 4)`：
+
+- 排序與原始 logit 完全一致，只是分數不再擠在 1.0；要到 logit 約 68 才會飽和
+- 中心點不變：logit 0 仍是 0.5
+- 分數會往 0.5 靠攏，以 sigmoid(logit) 訂的門檻需要重新校正
+
+| 文件（query：貨櫃航運運價對長榮、陽明、萬海獲利的影響） | logit | sigmoid(logit) | sigmoid(logit / 4) |
+|---|---|---|---|
+| 天氣、拉麵等無關文件 | -23 ～ -19 | 0.000000 | 0.003 ～ 0.009 |
+| 關鍵字相同但主題不同（長榮航空、BDI） | -12 ～ -8 | 0.00001 ～ 0.0003 | 0.05 ～ 0.12 |
+| 「貨櫃三雄第三季合計獲利 394 億元」一句話 | -1.0 | 0.26 | 0.44 |
+| 高相關研究報告 | 13.9 ～ 21.4 | 0.999999 ～ 1.0 | 0.970 ～ 0.995 |
+
+要調整攤開程度可改 `POOLER_CONFIG`，例如 `POOLER_CONFIG='{"logit_sigma": 3.0}' ./start.sh`（數字越大越往 0.5 集中）；也可加上 `logit_mean` 移動中心點。設為空字串（`POOLER_CONFIG= ./start.sh`）則回到 vLLM 預設。
 
 ## 長文件截斷
 
