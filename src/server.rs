@@ -73,6 +73,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/v1/embeddings", post(api::embeddings::handle))
         .route("/v2/rerank", post(api::rerank::handle))
         .route("/v1/systemone", post(api::decision))
+        .route("/decision/v2/rerank", post(api::decision_rerank::handle))
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .layer(middleware::from_fn(access))

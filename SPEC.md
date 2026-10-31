@@ -72,6 +72,15 @@ services:
         weight: 1                    # 範例採相同權重，可依後端容量調整
       - url: "http://127.0.0.1:12372"
         weight: 1
+
+  decision_reranker:                 # 選填；不設定則 /decision/v2/rerank 回 404（見 §6.4）
+    state_template: "Query: {query}\n\nDocument: {document}"
+    instructions: "Does the document contain information that helps answer the query?"
+    model: null
+    max_documents: 1000
+    max_concurrency: null            # null = 不限制
+    max_document_chars: null         # null = 不截斷
+    use_fallback: true               # 失敗時整包改送 services.decision.fallback
 ```
 
 - 每個 backend 可選填 `weight`（預設 1），用於拆分比例與輪流權重。
@@ -90,6 +99,7 @@ services:
 | POST | `/v1/embeddings` | OpenAI 格式 embedding |
 | POST | `/v2/rerank` | Cohere v2 格式 rerank |
 | POST | `/v1/systemone` | Decision API（Jev / SystemOne 格式，見 §6） |
+| POST | `/decision/v2/rerank` | Cohere v2 格式 rerank，以 decision 模型逐筆判斷（見 §6.4） |
 | GET  | `/healthz` | Liveness，永遠回 `200 {"status":"ok"}`（draining 時回 `503`） |
 | GET  | `/readyz` | Readiness，每個 service 至少有一個啟用中的健康後端才回 `200` |
 
@@ -275,6 +285,26 @@ Jev（TypeSafe，`https://api.typesafe.ai/v1/systemone`）與 Clef 使用相同�
 - 整個 request 送到**單一後端**，以加權輪流挑選，跳過 `disabled` / `unhealthy` 者。
 - **不拆分**：所有 questions 共用同一個 state，同一份 state 只需 prefill 一次，拆開送反而變慢。
 - Gateway **不解析也不驗證** body，request/response body、status code、`Content-Type` 原樣轉發（以串流方式搬移，不做 JSON 反序列化）；格式錯誤由後端回 `4xx`。
+
+### 6.4 Decision as Reranker — `POST /decision/v2/rerank`
+
+對外是 Cohere v2 rerank，後端是 decision 模型（pointwise）：每份 document 各送一個 `/v1/systemone`，問一個是非題，以「是」的機率當 `relevance_score`。Cohere SDK 把 base_url 設為 `http://<gateway>/decision` 即可使用。
+
+- 設定：`services.decision_reranker`（§2）。沒有自己的後端，**共用 `services.decision` 的後端池**（權重、健康狀態、in-flight 統計、探測、fallback）；未設定時回 `404 {"message": "decision reranker is not configured"}`。可熱重載。
+- Request：`query`（字串）、`documents`（字串，或含 `text` 的物件）、`top_n`（`0` 視同未指定）；非標準欄位 `instructions` 可覆寫題目。`model`、`return_documents`、`max_tokens_per_doc` 忽略。超過 `max_documents` 回 400。
+- 每筆的 decision request：`{"state": <state_template 套入 query 與 document>, "questions": {"relevant": {"type": "noul", "instructions": ...}}}`，`model` 有設定才帶。`max_document_chars` 只截斷放進 state 的 document，回應中的 `document.text` 仍是原文。回應缺 `answers.relevant` 的 `noul` 答案視為無效回應（後端失敗）。
+- 分派：每筆依權重平滑輪流交錯分給健康後端，同一 request 同時送出的呼叫數不超過 `max_concurrency`（不設則不限制）。單筆逾時沿用 decision 的 `request_timeout_ms`。
+- 重試：與 `/v1/systemone` 不同，這些 request 由 gateway 產生且沒有副作用，所以依 §8.3 的冪等規則在 5xx / 逾時 / 無效回應時改送其他後端。
+- 失敗：任一筆重試後仍失敗，整個 request 失敗（Cohere 錯誤格式，§8.5），不回傳部分結果。`use_fallback: true` 且 decision 有 fallback 時，**整個 request 的所有 document** 改送 fallback（Jev，分數尺度不同，不能與一般後端混排）；一般後端都不可用時也直接整包送 fallback。注意 fallback 每份 document 都是一次付費 API 呼叫。
+- Response：
+
+  ```json
+  {"id": "<uuid>", "model": "<第一個 decision 回應的 model>",
+   "results": [{"index": 2, "relevance_score": 0.79, "document": {"text": "..."}}],
+   "usage": {"prompt_tokens": 4321}}
+  ```
+
+  依分數由高到低排序（同分時 index 小者在前），再套用 `top_n`。`usage.prompt_tokens` 為各筆 `usage.input_tokens` 的總和（後端都沒回則省略）。access log 的 `items` 為 document 數。
 
 ---
 

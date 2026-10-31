@@ -1,5 +1,6 @@
 //! 業務 API handler（SPEC §4–§6）。
 
+pub mod decision_rerank;
 pub mod embeddings;
 pub mod rerank;
 

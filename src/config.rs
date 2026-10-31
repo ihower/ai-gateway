@@ -41,6 +41,8 @@ pub struct Config {
     pub embedding: ServiceConfig,
     pub reranker: ServiceConfig,
     pub decision: ServiceConfig,
+    /// 以 decision 後端提供 rerank（SPEC §6.4）；`None` 表示未啟用。
+    pub decision_reranker: Option<DecisionRerankerConfig>,
 }
 
 impl Config {
@@ -135,6 +137,60 @@ pub struct FallbackConfig {
     pub request_timeout_ms: Option<u64>,
 }
 
+/// `POST /decision/v2/rerank` 的設定：沒有自己的後端，共用 `services.decision` 的後端池。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DecisionRerankerConfig {
+    /// 每個 (query, document) 配對的 state；`{query}`、`{document}` 會被替換。
+    #[serde(default = "default_state_template")]
+    pub state_template: String,
+    /// 是非題的題目，「是」的機率即相關度；client 可用非標準欄位 `instructions` 覆寫。
+    #[serde(default = "default_relevance_instructions")]
+    pub instructions: String,
+    /// 送給 decision 後端的 `model` 欄位；`None` = 不帶。
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default = "default_max_documents")]
+    pub max_documents: usize,
+    /// 單一 rerank request 同時送出的 decision 呼叫上限；`None` = 不限制。
+    #[serde(default)]
+    pub max_concurrency: Option<usize>,
+    /// 放進 state 前把 document 截斷到這個字元數；`None` = 不截斷。
+    #[serde(default)]
+    pub max_document_chars: Option<usize>,
+    /// 一般後端失敗時，是否把整個 request 改送 `services.decision.fallback`。
+    #[serde(default = "default_true")]
+    pub use_fallback: bool,
+}
+
+impl DecisionRerankerConfig {
+    fn validate(&self) -> anyhow::Result<()> {
+        if !self.state_template.contains("{document}") {
+            bail!("services.decision_reranker.state_template must contain {{document}}");
+        }
+        if self.instructions.trim().is_empty() {
+            bail!("services.decision_reranker.instructions must not be empty");
+        }
+        if self.max_documents == 0 || self.max_concurrency == Some(0) || self.max_document_chars == Some(0) {
+            bail!("services.decision_reranker: max_documents / max_concurrency / max_document_chars must be at least 1");
+        }
+        Ok(())
+    }
+}
+
+fn default_state_template() -> String {
+    "Query: {query}\n\nDocument: {document}".to_string()
+}
+fn default_relevance_instructions() -> String {
+    "Does the document contain information that helps answer the query?".to_string()
+}
+fn default_max_documents() -> usize {
+    1000
+}
+fn default_true() -> bool {
+    true
+}
+
 fn default_shutdown_timeout() -> u64 {
     60
 }
@@ -167,6 +223,8 @@ struct RawServices {
     embedding: RawService,
     reranker: RawService,
     decision: RawService,
+    #[serde(default)]
+    decision_reranker: Option<DecisionRerankerConfig>,
 }
 
 #[derive(Deserialize, Default)]
@@ -275,6 +333,9 @@ pub fn parse(text: &str, path: &Path) -> anyhow::Result<Config> {
     let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
     let base_dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
     let defaults = raw.defaults.apply(&Tuning::default());
+    if let Some(dr) = &raw.services.decision_reranker {
+        dr.validate()?;
+    }
     let mut server = raw.server;
     server.control_socket = resolve_relative(&base_dir, &server.control_socket);
     Ok(Config {
@@ -283,6 +344,7 @@ pub fn parse(text: &str, path: &Path) -> anyhow::Result<Config> {
         embedding: raw.services.embedding.into_config(ServiceKind::Embedding, &defaults)?,
         reranker: raw.services.reranker.into_config(ServiceKind::Reranker, &defaults)?,
         decision: raw.services.decision.into_config(ServiceKind::Decision, &defaults)?,
+        decision_reranker: raw.services.decision_reranker,
         path,
     })
 }
@@ -347,6 +409,22 @@ services:
         let c = parse(&with_fallback, Path::new("c.yaml")).unwrap();
         let f = c.embedding.fallback.unwrap();
         assert_eq!((f.url.as_str(), f.request_timeout_ms), ("http://127.0.0.1:9", Some(120000)));
+    }
+
+    #[test]
+    fn parses_decision_reranker() {
+        assert!(parse(SAMPLE, Path::new("c.yaml")).unwrap().decision_reranker.is_none());
+        let c = parse(&format!("{SAMPLE}  decision_reranker: {{}}\n"), Path::new("c.yaml")).unwrap();
+        let dr = c.decision_reranker.unwrap();
+        assert_eq!(dr.state_template, "Query: {query}\n\nDocument: {document}");
+        assert_eq!((dr.max_documents, dr.max_concurrency, dr.use_fallback), (1000, None, true));
+        let c = parse(&format!("{SAMPLE}  decision_reranker:\n    max_concurrency: 4\n    use_fallback: false\n"), Path::new("c.yaml"))
+            .unwrap();
+        let dr = c.decision_reranker.unwrap();
+        assert_eq!((dr.max_concurrency, dr.use_fallback), (Some(4), false));
+        for bad in ["state_template: \"{query}\"", "max_concurrency: 0", "instructions: \" \"", "unknown: 1"] {
+            assert!(parse(&format!("{SAMPLE}  decision_reranker:\n    {bad}\n"), Path::new("c.yaml")).is_err(), "{bad}");
+        }
     }
 
     #[test]

@@ -18,12 +18,16 @@ const OK: u64 = 0;
 const FAIL: u64 = 1;
 const BAD_REQUEST: u64 = 2;
 
-/// 假後端：embedding 向量為 `[字串長度, 後端 id]`；rerank 分數為文件長度；decision 回傳後端 id。
+/// 假後端：embedding 向量為 `[字串長度, 後端 id]`；rerank 分數為文件長度；decision 回傳後端 id，
+/// 若是相關度題目（`relevant`）則以 state 中 document 的長度為機率。
 struct Mock {
     id: u64,
     hits: AtomicUsize,
     mode: AtomicU64,
     delay_ms: AtomicU64,
+    /// 同時處理中的 decision request 數與其峰值。
+    active: AtomicUsize,
+    peak: AtomicUsize,
 }
 
 impl Mock {
@@ -89,12 +93,29 @@ async fn mock_decision(State(m): State<Arc<Mock>>, axum::Json(req): axum::Json<V
     if let Some(r) = m.failure(req["state"] == "ping") {
         return r;
     }
+    let now = m.active.fetch_add(1, Ordering::SeqCst) + 1;
+    m.peak.fetch_max(now, Ordering::SeqCst);
     m.pause().await;
+    m.active.fetch_sub(1, Ordering::SeqCst);
+    if req["questions"]["relevant"]["type"] == "noul" {
+        let state = req["state"].as_str().unwrap();
+        let doc = state.split_once("Document: ").map_or("", |(_, d)| d);
+        return axum::Json(json!({"model": format!("mock-{}", m.id),
+            "answers": {"relevant": {"type": "noul", "noul": doc.len() as f64 / 100.0}}, "usage": {"input_tokens": 10}}))
+        .into_response();
+    }
     axum::Json(json!({"model": "mock", "answers": {"backend": {"type": "choice", "choice": m.id.to_string()}}})).into_response()
 }
 
 async fn spawn_mock(id: u64) -> (String, Arc<Mock>) {
-    let mock = Arc::new(Mock { id, hits: AtomicUsize::new(0), mode: AtomicU64::new(OK), delay_ms: AtomicU64::new(0) });
+    let mock = Arc::new(Mock {
+        id,
+        hits: AtomicUsize::new(0),
+        mode: AtomicU64::new(OK),
+        delay_ms: AtomicU64::new(0),
+        active: AtomicUsize::new(0),
+        peak: AtomicUsize::new(0),
+    });
     let app = Router::new()
         .route("/v1/embeddings", post(mock_embeddings))
         .route("/v2/rerank", post(mock_rerank))
@@ -488,6 +509,111 @@ async fn decision_falls_back_when_backends_unavailable() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(choice(&out), "9");
     assert_eq!(mf.hits.load(Ordering::Relaxed), 1);
+}
+
+/// 在設定檔末尾（`services` 底下）加上 `decision_reranker` 區塊。
+fn with_decision_reranker(yaml: String, body: &str) -> String {
+    format!("{yaml}  decision_reranker:\n{body}")
+}
+
+#[tokio::test]
+async fn decision_rerank_judges_each_document_and_sorts() {
+    let (u1, m1) = spawn_mock(1).await;
+    let (u2, m2) = spawn_mock(2).await;
+    let (gw, _) = start_gateway(|d| {
+        with_decision_reranker(config_yaml(d, &[&u1], &[&u1], &[&u1, &u2]), "    max_document_chars: 4\n")
+    })
+    .await;
+    let url = format!("{}/decision/v2/rerank", gw.url);
+    let docs = json!(["aaa", "a", "aaaaaaaa", {"text": "aa"}]);
+    let (status, out) = post_json(&url, json!({"query": "q", "documents": docs, "top_n": 3})).await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+    // 第 3 份截斷到 4 個字元後才判斷，回傳的 document 仍是原文
+    assert_eq!(
+        out["results"],
+        json!([
+            {"index": 2, "relevance_score": 0.04, "document": {"text": "aaaaaaaa"}},
+            {"index": 0, "relevance_score": 0.03, "document": {"text": "aaa"}},
+            {"index": 3, "relevance_score": 0.02, "document": {"text": "aa"}}
+        ])
+    );
+    assert_eq!(out["usage"], json!({"prompt_tokens": 40}));
+    // 每份 document 一個 decision 呼叫，依權重分到兩台
+    assert_eq!((m1.hits.load(Ordering::Relaxed), m2.hits.load(Ordering::Relaxed)), (2, 2));
+
+    let (status, out) = post_json(&url, json!({"query": "q", "documents": []})).await;
+    assert_eq!((status, out["results"].clone()), (StatusCode::OK, json!([])));
+    let (status, _) = post_json(&url, json!({"query": "q", "documents": [1]})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // 一般 rerank 端點不受影響
+    let (status, _) = post_json(&format!("{}/v2/rerank", gw.url), json!({"query": "q", "documents": ["a"]})).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn decision_rerank_is_404_when_not_configured() {
+    let (u1, _) = spawn_mock(1).await;
+    let (gw, _) = start_gateway(|d| config_yaml(d, &[&u1], &[&u1], &[&u1])).await;
+    let (status, out) = post_json(&format!("{}/decision/v2/rerank", gw.url), json!({"query": "q", "documents": ["a"]})).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(out["message"].as_str().unwrap().contains("not configured"));
+}
+
+#[tokio::test]
+async fn decision_rerank_limits_concurrency() {
+    let (u1, m1) = spawn_mock(1).await;
+    m1.delay_ms.store(50, Ordering::Relaxed);
+    let (gw, _) = start_gateway(|d| {
+        with_decision_reranker(config_yaml(d, &[&u1], &[&u1], &[&u1]), "    max_concurrency: 2\n    max_documents: 6\n")
+    })
+    .await;
+    let url = format!("{}/decision/v2/rerank", gw.url);
+    let (status, out) = post_json(&url, json!({"query": "q", "documents": ["a", "b", "c", "d", "e", "f"]})).await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+    assert_eq!(m1.hits.load(Ordering::Relaxed), 6);
+    assert_eq!(m1.peak.load(Ordering::SeqCst), 2);
+
+    let (status, out) = post_json(&url, json!({"query": "q", "documents": vec!["a"; 7]})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(out["message"].as_str().unwrap().contains("too many documents"));
+}
+
+#[tokio::test]
+async fn decision_rerank_falls_back_with_whole_request() {
+    let (u1, m1) = spawn_mock(1).await;
+    let (u2, m2) = spawn_mock(2).await;
+    let (fb, mf) = spawn_mock(9).await;
+    let yaml = |d: &std::path::Path, extra: &str| {
+        with_decision_reranker(with_fallback_on(config_yaml(d, &[&u1], &[&u1], &[&u1, &u2]), "decision", &fb), extra)
+    };
+    let (gw, _) = start_gateway(|d| yaml(d, "    max_concurrency: 1\n")).await;
+    let url = format!("{}/decision/v2/rerank", gw.url);
+    let body = json!({"query": "q", "documents": ["aaa", "a", "aa"]});
+
+    // 只有一台壞：該筆在另一台重試，不用 fallback
+    m1.mode.store(FAIL, Ordering::Relaxed);
+    let (status, out) = post_json(&url, body.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+    assert_eq!(out["model"], json!("mock-2"));
+    assert_eq!(mf.hits.load(Ordering::Relaxed), 0);
+
+    // 兩台都壞：不只補失敗那筆，整個 request 改送 fallback（分數不能混排）
+    m2.mode.store(FAIL, Ordering::Relaxed);
+    let (status, out) = post_json(&url, body.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+    assert_eq!(out["model"], json!("mock-9"));
+    let idx: Vec<u64> = out["results"].as_array().unwrap().iter().map(|r| r["index"].as_u64().unwrap()).collect();
+    assert_eq!(idx, vec![0, 2, 1]);
+    assert_eq!(mf.hits.load(Ordering::Relaxed), 3);
+
+    // use_fallback: false 時直接回錯誤
+    let (gw, _) = start_gateway(|d| yaml(d, "    use_fallback: false\n")).await;
+    m1.mode.store(FAIL, Ordering::Relaxed);
+    m2.mode.store(FAIL, Ordering::Relaxed);
+    let (status, out) = post_json(&format!("{}/decision/v2/rerank", gw.url), body).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY, "{out}");
+    assert!(out["message"].is_string());
+    assert_eq!(mf.hits.load(Ordering::Relaxed), 3);
 }
 
 /// 收集 tracing 輸出（JSON），供檢查 access log。
