@@ -192,8 +192,11 @@ async fn rerank(
     let calls = chunks.iter().map(|chunk| {
         let mut sub = req.clone();
         sub.insert("documents".into(), Value::Array(docs[chunk.offset..chunk.offset + chunk.len].to_vec()));
-        // 全域前 n 名必然落在各份的前 n 名之中；有切段時同一份 document 的多段可能同時擠進前 n 名，不能這樣縮減
-        if let (Some(n), None) = (top_n, &expanded) {
+        // 全域前 n 名必然落在各份的前 n 名之中；有切段時同一份 document 的多段可能同時擠進前 n 名，
+        // 縮減會讓其他 document 整個消失，所以要拿掉 client 的 top_n、讓後端回傳所有段
+        if expanded.is_some() {
+            sub.remove("top_n");
+        } else if let Some(n) = top_n {
             sub.insert("top_n".into(), Value::from(n.min(chunk.len)));
         }
         let sub_body = Bytes::from(serde_json::to_vec(&sub).expect("serialize sub-request"));

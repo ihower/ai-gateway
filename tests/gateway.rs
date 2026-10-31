@@ -532,6 +532,24 @@ fn with_chunking(yaml: String, service: &str, chunking: &str) -> String {
 const MIXED: &str = "aaaa一一一一";
 
 #[tokio::test]
+async fn rerank_chunking_does_not_forward_top_n_to_sub_requests() {
+    let (u1, _m1) = spawn_mock(1).await;
+    let (gw, _) = start_gateway(|d| {
+        with_chunking(config_yaml(d, &[&u1], &[&u1], &[&u1]), "reranker", "{max_chars: 4, overlap_chars: 1}")
+    })
+    .await;
+    // "aaaaaaa" 切成兩段（各 0.04），加上 "a"（0.01）共 3 段送同一台；
+    // 若把 top_n=2 原樣轉給後端，只會回兩段（都屬於 index 0），index 1 就從結果裡消失
+    let (status, out) = post_json(
+        &format!("{}/v2/rerank", gw.url),
+        json!({"query": "q", "documents": ["aaaaaaa", "a"], "top_n": 2}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+    assert_eq!(out["results"], json!([{"index": 0, "relevance_score": 0.04}, {"index": 1, "relevance_score": 0.01}]));
+}
+
+#[tokio::test]
 async fn rerank_chunks_long_documents_and_takes_max() {
     let (u1, m1) = spawn_mock(1).await;
     let (u2, m2) = spawn_mock(2).await;
