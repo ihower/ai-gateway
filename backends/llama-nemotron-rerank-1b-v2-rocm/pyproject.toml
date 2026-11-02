@@ -1,0 +1,65 @@
+[project]
+name = "llama-nemotron-rerank-1b-v2-rocm"
+version = "0.1.0"
+description = "vLLM reranker HTTP API for nvidia/llama-nemotron-rerank-1b-v2 on AMD ROCm (gfx1151)"
+requires-python = "==3.13.*"
+dependencies = [
+    "orjson>=3.13.0",
+    # 以下皆為 AMD 官方 gfx1151（Strix Halo）ROCm 7.13 版本，彼此 ABI 必須一致
+    "torch==2.10.0+rocm7.13.0",
+    "torchvision==0.25.0+rocm7.13.0",
+    "torchaudio==2.10.0+rocm7.13.0",
+    # rocm 與 rocm-sdk-* 列為直接依賴，uv 才會從 AMD index 取（sources 只作用於直接依賴）
+    "rocm[libraries]==7.13.0",
+    "rocm-sdk-core==7.13.0",
+    "rocm-sdk-libraries-gfx1151==7.13.0",
+    "triton==3.6.0+rocm7.13.0",
+    "flash-attn",
+    "vllm",
+]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=9.1.1",
+]
+
+[tool.uv.sources]
+torch = { index = "rocm-gfx1151" }
+torchvision = { index = "rocm-gfx1151" }
+torchaudio = { index = "rocm-gfx1151" }
+rocm = { index = "rocm-gfx1151" }
+rocm-sdk-core = { index = "rocm-gfx1151" }
+rocm-sdk-libraries-gfx1151 = { index = "rocm-gfx1151" }
+triton = { index = "rocm-gfx1151" }
+flash-attn = { url = "https://rocm.frameworks.amd.com/whl/gfx1151/flash_attn-2.8.3-py3-none-any.whl" }
+vllm = { url = "https://rocm.frameworks.amd.com/whl/gfx1151/vllm-0.19.1.dev3%2Brocm7.13.0.g72ed2b398.d20260513-cp313-cp313-linux_x86_64.whl" }
+
+[[tool.uv.index]]
+name = "rocm-gfx1151"
+url = "https://repo.amd.com/rocm/whl/gfx1151/"
+explicit = true
+
+[tool.uv]
+prerelease = "allow"
+# ROCm torch 由上面的 index 提供，避免其他套件從 PyPI 拉 CUDA 版
+override-dependencies = [
+    "torch==2.10.0+rocm7.13.0",
+    "torchvision==0.25.0+rocm7.13.0",
+    "torchaudio==2.10.0+rocm7.13.0",
+]
+
+# 把本專案裝進 venv，讓下面的 entry point 生效
+[project.entry-points."vllm.platform_plugins"]
+force_rocm = "vllm_force_rocm:force_rocm"
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["rerank_middleware", "vllm_force_rocm"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
