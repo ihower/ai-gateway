@@ -126,7 +126,9 @@ def main() -> int:
         else:
             check("截斷只影響超長那份", False, f"HTTP {alone.status_code}/{mixed.status_code}")
 
-        r = rerank(client, [LONG_DOC], truncate_prompt_tokens=None)
+        # vLLM 0.19.1 回這個 400 後會關閉連線，下一個請求會 connection reset，所以用獨立連線
+        with httpx.Client(timeout=120) as separate:
+            r = rerank(separate, [LONG_DOC], truncate_prompt_tokens=None)
         check(
             "明確帶 truncate_prompt_tokens=null 時不截斷（應回 400）",
             r.status_code == 400,
