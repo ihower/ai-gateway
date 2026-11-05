@@ -45,7 +45,7 @@ fi
 
 # AMD 文件要求：amd_smi 的 Python binding 在 rocm-sdk-core 裡，vLLM 偵測 ROCm 平台需要它
 # 另外加上本目錄，讓 vLLM 能 import rerank_middleware
-AMD_SMI_PATH="$SCRIPT_DIR/.venv/lib/python3.13/site-packages/_rocm_sdk_core/share/amd_smi"
+AMD_SMI_PATH="$SCRIPT_DIR/.venv/lib/python3.14/site-packages/_rocm_sdk_core/share/amd_smi"
 export PYTHONPATH="$SCRIPT_DIR:$AMD_SMI_PATH${PYTHONPATH:+:$PYTHONPATH}"
 export FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE
 
