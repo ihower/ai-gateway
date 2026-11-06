@@ -117,3 +117,9 @@ RUST_LOG=info,access=off ./ai-gateway serve              # 關閉 access log
 ```bash
 cargo test
 ```
+
+## 授權
+
+本專案採用 [MIT License](LICENSE)。Copyright (c) 2026 Wen-Tien Chang (ihower)。
+
+第三方套件、模型權重與雲端 API 仍適用各自的授權及使用條款，不包含在本專案的 MIT 授權範圍內。

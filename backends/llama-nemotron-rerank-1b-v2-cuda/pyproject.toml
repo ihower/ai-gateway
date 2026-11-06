@@ -1,6 +1,7 @@
 [project]
 name = "llama-nemotron-rerank-1b-v2-server"
 version = "0.1.0"
+license = "MIT"
 description = "vLLM reranker HTTP API for nvidia/llama-nemotron-rerank-1b-v2"
 requires-python = ">=3.12,<3.13"
 dependencies = [
