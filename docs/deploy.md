@@ -1,12 +1,25 @@
 # 部署到 Linux server
 
-本文件說明如何在另一台 Linux server 上，從 git repo 取得程式碼後部署 ai-gateway 與 fallback server。
+建議將 **app、`ai-gateway` 與 Python FastAPI fallback 部署在同一台 Linux server**；需要顯卡的推論後端則部署到其他 GPU 機器。
+
+```text
+App 所在機器（不需要顯卡）                  GPU 機器（可多台）
+app → ai-gateway ──────────── 網路 ──────→ CUDA / ROCm 推論後端
+          │
+          └─ localhost → FastAPI fallback
+                            ├─ CPU embedding
+                            └─ 雲端 API：Cohere / Jev
+```
+
+Gateway 與 fallback 的服務層都很輕量，適合與 app 一起部署。Fallback 的 embedding 模型較小，可用 CPU 暫時維持服務，但載入模型仍會占用記憶體，推論時也會與 app 共用 CPU，需依負載預留資源。GPU 機器不可用時，app 仍可呼叫同機 fallback；Cohere / Jev 轉送則需要外網與 API key。
+
+以下步驟在 **app 所在機器**執行。GPU 機器請依 `backends/` 中對應 CUDA / ROCm 專案的 README 安裝與啟動服務，再將可從 app 機器連線的後端位址填入 gateway 設定。
 
 做法：使用 repo 根目錄已編譯好的 `ai-gateway` binary（不需要在 server 上安裝 Rust），兩個 process 都交給 systemd 管理，設定檔放在 repo 外面，避免 `git pull` 時發生衝突。
 
 | Process | 說明 | 預設位址 |
 |---------|------|----------|
-| `ai-gateway` | Rust gateway | `0.0.0.0:54321`（API）、`54322`（管理埠） |
+| `ai-gateway` | Rust gateway，供同機 app 呼叫 | `127.0.0.1:54321`（API）、`127.0.0.1:54322`（管理埠） |
 | `ai-gateway-fallback` | `fallback-fastapi/server.py`：CPU embedding、轉送 Cohere / Jev | `127.0.0.1:12359` |
 
 以下的 `<user>` 請換成執行服務的使用者名稱。
@@ -71,7 +84,7 @@ cp ~/ai-gateway/config.yaml.example ~/ai-gateway-config/config.yaml
 
 需要確認的項目：
 
-- **後端位址**：範例使用 `127.0.0.1:*`，請改為實際後端位址，並刪除未部署的項目；範例權重相同，可依容量調整。
+- **後端位址**：範例使用 `gpu-1.example.com` 至 `gpu-3.example.com` 作為 GPU 主機名稱，僅供示意。請將 `services.<service>.backends` 改為實際可連線的 GPU 主機名稱或 IP 與服務 port，並刪除未部署的項目。範例權重相同，可依容量調整。
 - **fallback 位址**：`127.0.0.1:12359`，前提是 fallback server 與 gateway 在同一台機器上（照本文件部署即是如此）。
 - **`control_socket`**：`run/control.sock` 是相對於設定檔所在目錄，會放在 `~/ai-gateway-config/run/`，目錄會自動建立。
 - **監聽位址**：範例的 API 與管理埠都綁定 `127.0.0.1`。兩者沒有驗證；如需遠端存取，請另設驗證與網路存取限制。
@@ -180,5 +193,5 @@ sudo systemctl reload ai-gateway
 ## 9. 新 server 需要確認的事項
 
 - **glibc / 架構**：根目錄的 binary 是 x86-64、需要 glibc ≥ 2.34；不符時改在 server 上編譯（見第 2 節）。
-- **網路**：server 需要能連到 `api.cohere.com` 與 `api.typesafe.ai`，否則 reranker 與 decision 的 fallback 探測會失敗。
-- **資源**：embedding fallback 在本機 CPU 上推論，約佔 1.5 GB 記憶體；實際使用時會與 gateway 搶 CPU。
+- **網路**：app 所在機器需要能連到 GPU 後端，以及 `api.cohere.com` 與 `api.typesafe.ai`。GPU 後端應只允許預期的 app / gateway 機器存取。
+- **資源**：embedding fallback 會載入模型並在本機 CPU 上推論，請預留模型與 Python 執行環境所需記憶體，以及與 app 共用的 CPU 容量；實際用量依模型設定與負載而異。

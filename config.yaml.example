@@ -1,5 +1,7 @@
 # 複製為 config.yaml 後，依實際部署調整後端位址與數量。
-# 此範例假設服務在同一台主機；刪除未啟動的後端項目。
+# App、gateway 與 FastAPI fallback 部署在同一台主機；GPU 後端部署在其他機器。
+# gpu-1.example.com 至 gpu-3.example.com 僅為示例，請換成可連線的 GPU 主機名稱或 IP。
+# 各後端 port 請依實際服務調整，並刪除未部署的項目。
 # Gateway 沒有 API key 驗證，對外提供服務前請另設驗證與網路存取限制。
 # fallback 為選填；轉送 Cohere / Jev 需設定 API key，並會產生 API 費用。
 server:
@@ -22,9 +24,9 @@ services:
   # weight：依比例分配。embedding / reranker 拆分時依權重切份數，decision 依權重輪流分派。
   embedding:
     backends:
-      - url: "http://127.0.0.1:12351"
-      - url: "http://127.0.0.1:12352"
-      - url: "http://127.0.0.1:12353"
+      - url: "http://gpu-1.example.com:12351"
+      - url: "http://gpu-2.example.com:12352"
+      - url: "http://gpu-3.example.com:12353"
     fallback:                        # 所有一般後端都失效時才使用：CPU 跑的 voyage-4-nano（fallback-fastapi/server.py）
       url: "http://127.0.0.1:12359"
       request_timeout_ms: 120000     # CPU 推論較慢
@@ -34,11 +36,11 @@ services:
       max_chars: 2000
       overlap_chars: 200
     backends:
-      - url: "http://127.0.0.1:12361"
+      - url: "http://gpu-1.example.com:12361"
         weight: 1
-      - url: "http://127.0.0.1:12362"
+      - url: "http://gpu-2.example.com:12362"
         weight: 1
-      - url: "http://127.0.0.1:12363"
+      - url: "http://gpu-3.example.com:12363"
         weight: 1
     fallback:                        # 所有一般後端都失效時才使用：Cohere rerank-v4.0-fast（經 fallback-fastapi/server.py 轉送）
       url: "http://127.0.0.1:12359"
@@ -46,9 +48,9 @@ services:
 
   decision:
     backends:
-      - url: "http://127.0.0.1:12371"
+      - url: "http://gpu-1.example.com:12371"
         weight: 1
-      - url: "http://127.0.0.1:12372"
+      - url: "http://gpu-2.example.com:12372"
         weight: 1
     fallback:                        # 所有一般後端都失效時才使用：Jev jev-1.14.0（經 fallback-fastapi/server.py 轉送）
       url: "http://127.0.0.1:12359"

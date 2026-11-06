@@ -110,7 +110,11 @@ RUST_LOG=info,access=off ./ai-gateway serve              # 關閉 access log
 
 ## 部署
 
-部署到另一台 Linux server（systemd、設定檔放置、更新流程）見 [docs/deploy.md](docs/deploy.md)。
+建議將 **app、`ai-gateway` 與 Python FastAPI fallback 部署在同一台機器**，透過 localhost 溝通。Gateway 與 fallback 的服務層都很輕量，不需要顯卡；embedding fallback 會載入模型並使用 CPU 推論，仍需預留記憶體與 CPU 資源。
+
+需要 NVIDIA CUDA / AMD ROCm 的推論後端則部署到其他 GPU 機器，由 gateway 經網路呼叫。這樣 GPU 後端不可用時，app 所在機器仍可透過 CPU embedding 或雲端 API fallback 維持服務。
+
+詳細部署步驟（systemd、設定檔放置、更新流程）見 [docs/deploy.md](docs/deploy.md)。
 
 ## 測試
 
