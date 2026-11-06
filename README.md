@@ -8,6 +8,20 @@
 - 啟動與 reload 時實際打一次各後端 API，連不上的後端停用到下次 reload
 - `ai-gateway reload` 熱重載後端清單，進行中的 request 用舊清單完成
 
+## 後端專案
+
+四個 GPU 後端統一放在 `backends/`，與 gateway 一起由此 Git repo 管理：
+
+| 子目錄 | 用途 |
+|--------|------|
+| [voyage-4-nano-cuda](backends/voyage-4-nano-cuda/README.md) | NVIDIA CUDA embedding |
+| [voyage-4-nano-rocm](backends/voyage-4-nano-rocm/README.md) | AMD ROCm embedding |
+| [llama-nemotron-rerank-1b-v2-cuda](backends/llama-nemotron-rerank-1b-v2-cuda/README.md) | NVIDIA CUDA reranker |
+| [llama-nemotron-rerank-1b-v2-rocm](backends/llama-nemotron-rerank-1b-v2-rocm/README.md) | AMD ROCm reranker |
+
+各後端保留獨立的 `pyproject.toml`、`uv.lock` 與 `.venv`，Python、vLLM 和 GPU 套件版本不可混用。請先進入對應子目錄，再依其 README 安裝與啟動；gateway 的建置方式不變。模型快取與原 repo 的虛擬環境不隨整併搬移。
+
+
 ## 建置
 
 ```bash

@@ -1,8 +1,8 @@
 # llama-nemotron-rerank-1b-v2-rocm
 
-[llama-nemotron-rerank-1b-v2-server](../llama-nemotron-rerank-1b-v2-server) 的 **AMD ROCm 版**：在 Radeon 8060S（Strix Halo，gfx1151）上用 vLLM 架設 [nvidia/llama-nemotron-rerank-1b-v2](https://huggingface.co/nvidia/llama-nemotron-rerank-1b-v2) 的 reranker API。
+[llama-nemotron-rerank-1b-v2-cuda](../llama-nemotron-rerank-1b-v2-cuda) 的 **AMD ROCm 版**：在 Radeon 8060S（Strix Halo，gfx1151）上用 vLLM 架設 [nvidia/llama-nemotron-rerank-1b-v2](https://huggingface.co/nvidia/llama-nemotron-rerank-1b-v2) 的 reranker API。
 
-`/rerank`、`/score`、預設截斷、分數校準 `sigmoid(logit / 4)` 的行為都和 NVIDIA 版相同。API 用法請看 [NVIDIA 版 README](../llama-nemotron-rerank-1b-v2-server/README.md#api)，把 port 換成 12363 即可。
+`/rerank`、`/score`、預設截斷、分數校準 `sigmoid(logit / 4)` 的行為都和 NVIDIA 版相同。API 用法請看 [NVIDIA 版 README](../llama-nemotron-rerank-1b-v2-cuda/README.md#api)，把 port 換成 12363 即可。
 
 ## 和 NVIDIA 版的差異
 

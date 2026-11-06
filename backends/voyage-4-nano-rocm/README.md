@@ -1,6 +1,6 @@
 # voyage-4-nano-rocm
 
-[voyage-4-nano-server](../voyage-4-nano-server) 的 **AMD ROCm 版**：在 Radeon 8060S（Strix Halo，gfx1151）上用 vLLM 架設 [voyageai/voyage-4-nano](https://huggingface.co/voyageai/voyage-4-nano) 的 OpenAI 相容 embedding API。
+[voyage-4-nano-cuda](../voyage-4-nano-cuda) 的 **AMD ROCm 版**：在 Radeon 8060S（Strix Halo，gfx1151）上用 vLLM 架設 [voyageai/voyage-4-nano](https://huggingface.co/voyageai/voyage-4-nano) 的 OpenAI 相容 embedding API。
 
 API、`input_type` middleware、`dimensions`、base64 等行為和 NVIDIA 版完全相同（`prompt_middleware.py` 原樣沿用），差別只在執行環境。
 
@@ -32,7 +32,7 @@ uv sync
 
 看到 `Application startup complete` 就可以呼叫。環境變數（`HOST`、`PORT`、`GPU_MEMORY_UTILIZATION`、`MAX_MODEL_LEN`、`API_SERVER_COUNT`、`DEFAULT_INPUT_TYPE`、`VLLM_PROCESS_NAME_PREFIX`）和 NVIDIA 版相同，只有 `PORT` 預設改成 `12353`。其他參數會原樣傳給 `vllm serve`。
 
-API 用法請看 [NVIDIA 版 README](../voyage-4-nano-server/README.md#api)，把 port 換成 12353 即可。
+API 用法請看 [NVIDIA 版 README](../voyage-4-nano-cuda/README.md#api)，把 port 換成 12353 即可。
 
 ## 測試
 

@@ -1,4 +1,4 @@
-# llama-nemotron-rerank-1b-v2 server
+# llama-nemotron-rerank-1b-v2-cuda
 
 使用 [vLLM](https://github.com/vllm-project/vllm) 將 [nvidia/llama-nemotron-rerank-1b-v2](https://huggingface.co/nvidia/llama-nemotron-rerank-1b-v2) 部署為 reranker HTTP API（Cohere / Jina 相容的 `/rerank`）。
 

@@ -1,4 +1,4 @@
-# voyage-4-nano-server
+# voyage-4-nano-cuda
 
 用 [vLLM](https://github.com/vllm-project/vllm) 架設 [voyageai/voyage-4-nano](https://huggingface.co/voyageai/voyage-4-nano) 的 **OpenAI 相容 embedding API**，並用一個 ASGI middleware 支援 Voyage 的 `input_type`（query / document prompt）。
 

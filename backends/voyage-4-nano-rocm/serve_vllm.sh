@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 在 AMD ROCm GPU（Radeon 8060S / gfx1151）上啟動 vLLM embedding server，並掛上 prompt middleware
-# 預設 0.0.0.0:12353（NVIDIA 版 voyage-4-nano-server 用 12351，兩者可同時跑）
+# 預設 0.0.0.0:12353（NVIDIA 版 voyage-4-nano-cuda 用 12351，兩者可同時跑）
 set -euo pipefail
 cd "$(dirname "$0")"
 
