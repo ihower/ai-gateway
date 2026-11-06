@@ -68,6 +68,7 @@ API key 放在 `fallback-fastapi/.env`（`COHERE_API_KEY`、`JEV_API_KEY`），�
 
 ```bash
 cd fallback-fastapi
+cp -n .env.example .env       # 首次設定：填入需要的 API key；不覆蓋既有 .env
 uv run server.py              # 預設 127.0.0.1:12359；FALLBACK_DTYPE=fp32 可改用 float32
 uv run pytest -q              # 對照 vLLM 後端驗證，並實際呼叫 Cohere / Jev 少量請求
 ```

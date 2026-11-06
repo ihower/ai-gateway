@@ -40,7 +40,9 @@ sudo apt install build-essential
 
 ### API key：`fallback-fastapi/.env`
 
-`.env` 在 `.gitignore` 內，需要自行從原本的機器複製過去，並限制權限：
+首次部署可在目標機器的 `fallback-fastapi/` 執行 `cp -n .env.example .env`，填入自己的金鑰，再執行 `chmod 600 .env`。範例也列出選填的模型、端點與逾時設定。
+
+`.env` 在 `.gitignore` 內；若已有設定，可從原本的機器複製過去，並限制權限：
 
 ```bash
 scp fallback-fastapi/.env <server>:~/ai-gateway/fallback-fastapi/.env
