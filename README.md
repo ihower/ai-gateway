@@ -39,7 +39,11 @@ GPU 後端放在 `backends/`，Python FastAPI fallback 放在根目錄的 `fallb
 ./build.sh    # cargo build --release，並複製到根目錄的 ./ai-gateway
 ```
 
-根目錄的 `ai-gateway` binary 會 commit 進 git，部署端 `git pull` 後即可直接執行，不需要 Rust（x86-64、glibc ≥ 2.34）。修改 Rust 程式碼後，commit 前請先執行 `./build.sh`，讓 binary 與程式碼一致。
+根目錄隨 Git 提供的 `ai-gateway` binary 適用於 **Linux x86-64（Intel / AMD 64 位元），需要 glibc ≥ 2.34**，採動態連結。符合條件的部署端 `git pull` 後即可直接執行，不需要安裝 Rust；gateway 本身不需要 CUDA 或 ROCm，GPU 執行環境由各推論後端負責。
+
+此 binary 無法直接在 macOS、Windows、Linux ARM64 或使用 musl 的 Alpine Linux 執行。其他平台需另行確認原始碼與依賴的相容性並自行建置。
+
+修改 Rust 程式碼後，commit 前請先執行 `./build.sh`，讓 binary 與程式碼一致。
 
 ## 使用
 
