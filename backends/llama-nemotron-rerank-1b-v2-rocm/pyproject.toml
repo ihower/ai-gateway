@@ -2,24 +2,29 @@
 name = "llama-nemotron-rerank-1b-v2-rocm"
 version = "0.1.0"
 license = "MIT"
-description = "vLLM reranker HTTP API for nvidia/llama-nemotron-rerank-1b-v2 on AMD ROCm (gfx1151)"
+description = "vLLM reranker HTTP API for nvidia/llama-nemotron-rerank-1b-v2 on AMD ROCm (gfx1151 / gfx1201)"
 # torchvision 0.28.0 排除 3.14.1，下限要避開才能解析
 requires-python = ">=3.14.2,<3.15"
 dependencies = [
     "orjson>=3.13.0",
-    # 以下皆為 AMD 官方 ROCm 10.1 版本（gfx1151 / Strix Halo），彼此 ABI 必須一致
-    "torch[device-gfx1151]==2.13.0+rocm10.1.0",
-    "torchvision[device-gfx1151]==0.28.0+rocm10.1.0",
+    # 以下皆為 AMD 官方 ROCm 10.1 版本，彼此 ABI 必須一致
+    # 同時裝兩種 GPU 的 kernel：gfx1151（Radeon 8060S / Strix Halo）、gfx1201（Radeon RX 9070 XT）
+    "torch[device-gfx1151,device-gfx1201]==2.13.0+rocm10.1.0",
+    "torchvision[device-gfx1151,device-gfx1201]==0.28.0+rocm10.1.0",
     "torchaudio==2.11.0.2+rocm10.1.0",
     # 下列傳遞依賴列為直接依賴，uv 才會從 AMD index 取（sources 只作用於直接依賴）
     "amd-torch-device-gfx1151==2.13.0+rocm10.1.0",
     "amd-torch-device-gfx115x==2.13.0+rocm10.1.0",
     "amd-torchvision-device-gfx1151==0.28.0+rocm10.1.0",
+    "amd-torch-device-gfx1201==2.13.0+rocm10.1.0",
+    "amd-torch-device-gfx12-0==2.13.0+rocm10.1.0",
+    "amd-torchvision-device-gfx1201==0.28.0+rocm10.1.0",
     "rocm[libraries]==10.1.0",
     "rocm-bootstrap",
     "rocm-sdk-core==10.1.0",
     "rocm-sdk-libraries==10.1.0",
     "rocm-sdk-device-gfx1151==10.1.0",
+    "rocm-sdk-device-gfx1201==10.1.0",
     "triton==3.8.0+git669b31ac.rocm10.1.0",
     "flash-attn==2.8.3",
     "amd-aiter==0.1.22.post2.dev0+gb4d9154d1.d20261002",
@@ -39,11 +44,15 @@ torchaudio = { index = "rocm-whl-next" }
 amd-torch-device-gfx1151 = { index = "rocm-whl-next" }
 amd-torch-device-gfx115x = { index = "rocm-whl-next" }
 amd-torchvision-device-gfx1151 = { index = "rocm-whl-next" }
+amd-torch-device-gfx1201 = { index = "rocm-whl-next" }
+amd-torch-device-gfx12-0 = { index = "rocm-whl-next" }
+amd-torchvision-device-gfx1201 = { index = "rocm-whl-next" }
 rocm = { index = "rocm-whl-next" }
 rocm-bootstrap = { index = "rocm-whl-next" }
 rocm-sdk-core = { index = "rocm-whl-next" }
 rocm-sdk-libraries = { index = "rocm-whl-next" }
 rocm-sdk-device-gfx1151 = { index = "rocm-whl-next" }
+rocm-sdk-device-gfx1201 = { index = "rocm-whl-next" }
 triton = { index = "rocm-whl-next" }
 flash-attn = { index = "rocm-vllm" }
 amd-aiter = { index = "rocm-vllm" }

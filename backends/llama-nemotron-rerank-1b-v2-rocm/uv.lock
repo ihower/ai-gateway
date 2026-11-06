@@ -174,6 +174,29 @@ wheels = [
 ]
 
 [[package]]
+name = "amd-torch-device-gfx12-0"
+version = "2.13.0+rocm10.1.0"
+source = { registry = "https://stable.repo.amd.com/rocm/whl-next/" }
+dependencies = [
+    { name = "torch", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+]
+wheels = [
+    { url = "https://stable.repo.amd.com/rocm/pytorch/whl-next/amd-torch-device-gfx12-0/amd_torch_device_gfx12_0-2.13.0%2Brocm10.1.0-cp314-cp314-linux_x86_64.whl" },
+]
+
+[[package]]
+name = "amd-torch-device-gfx1201"
+version = "2.13.0+rocm10.1.0"
+source = { registry = "https://stable.repo.amd.com/rocm/whl-next/" }
+dependencies = [
+    { name = "rocm-sdk-device-gfx1201", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "torch", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+]
+wheels = [
+    { url = "https://stable.repo.amd.com/rocm/pytorch/whl-next/amd-torch-device-gfx1201/amd_torch_device_gfx1201-2.13.0%2Brocm10.1.0-cp314-cp314-linux_x86_64.whl" },
+]
+
+[[package]]
 name = "amd-torchvision-device-gfx1151"
 version = "0.28.0+rocm10.1.0"
 source = { registry = "https://stable.repo.amd.com/rocm/whl-next/" }
@@ -183,6 +206,18 @@ dependencies = [
 ]
 wheels = [
     { url = "https://stable.repo.amd.com/rocm/pytorch/whl-next/amd-torchvision-device-gfx1151/amd_torchvision_device_gfx1151-0.28.0%2Brocm10.1.0-cp314-cp314-linux_x86_64.whl" },
+]
+
+[[package]]
+name = "amd-torchvision-device-gfx1201"
+version = "0.28.0+rocm10.1.0"
+source = { registry = "https://stable.repo.amd.com/rocm/whl-next/" }
+dependencies = [
+    { name = "rocm-sdk-device-gfx1201", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "torchvision", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+]
+wheels = [
+    { url = "https://stable.repo.amd.com/rocm/pytorch/whl-next/amd-torchvision-device-gfx1201/amd_torchvision_device_gfx1201-0.28.0%2Brocm10.1.0-cp314-cp314-linux_x86_64.whl" },
 ]
 
 [[package]]
@@ -1251,13 +1286,17 @@ dependencies = [
     { name = "amd-aiter", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "amd-torch-device-gfx1151", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "amd-torch-device-gfx115x", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "amd-torch-device-gfx12-0", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "amd-torch-device-gfx1201", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "amd-torchvision-device-gfx1151", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "amd-torchvision-device-gfx1201", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "flash-attn", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "orjson", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "rocm", extra = ["libraries"], marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "rocm-bootstrap", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "rocm-sdk-core", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "rocm-sdk-device-gfx1151", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "rocm-sdk-device-gfx1201", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "rocm-sdk-libraries", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "torch", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "torchaudio", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
@@ -1277,17 +1316,21 @@ requires-dist = [
     { name = "amd-aiter", specifier = "==0.1.22.post2.dev0+gb4d9154d1.d20261002", index = "https://rocm.frameworks.amd.com/whl-multi-arch/vllm/" },
     { name = "amd-torch-device-gfx1151", specifier = "==2.13.0+rocm10.1.0", index = "https://stable.repo.amd.com/rocm/whl-next/" },
     { name = "amd-torch-device-gfx115x", specifier = "==2.13.0+rocm10.1.0", index = "https://stable.repo.amd.com/rocm/whl-next/" },
+    { name = "amd-torch-device-gfx12-0", specifier = "==2.13.0+rocm10.1.0", index = "https://stable.repo.amd.com/rocm/whl-next/" },
+    { name = "amd-torch-device-gfx1201", specifier = "==2.13.0+rocm10.1.0", index = "https://stable.repo.amd.com/rocm/whl-next/" },
     { name = "amd-torchvision-device-gfx1151", specifier = "==0.28.0+rocm10.1.0", index = "https://stable.repo.amd.com/rocm/whl-next/" },
+    { name = "amd-torchvision-device-gfx1201", specifier = "==0.28.0+rocm10.1.0", index = "https://stable.repo.amd.com/rocm/whl-next/" },
     { name = "flash-attn", specifier = "==2.8.3", index = "https://rocm.frameworks.amd.com/whl-multi-arch/vllm/" },
     { name = "orjson", specifier = ">=3.13.0" },
     { name = "rocm", extras = ["libraries"], specifier = "==10.1.0", index = "https://stable.repo.amd.com/rocm/whl-next/" },
     { name = "rocm-bootstrap", index = "https://stable.repo.amd.com/rocm/whl-next/" },
     { name = "rocm-sdk-core", specifier = "==10.1.0", index = "https://stable.repo.amd.com/rocm/whl-next/" },
     { name = "rocm-sdk-device-gfx1151", specifier = "==10.1.0", index = "https://stable.repo.amd.com/rocm/whl-next/" },
+    { name = "rocm-sdk-device-gfx1201", specifier = "==10.1.0", index = "https://stable.repo.amd.com/rocm/whl-next/" },
     { name = "rocm-sdk-libraries", specifier = "==10.1.0", index = "https://stable.repo.amd.com/rocm/whl-next/" },
-    { name = "torch", extras = ["device-gfx1151"], specifier = "==2.13.0+rocm10.1.0", index = "https://stable.repo.amd.com/rocm/whl-next/" },
+    { name = "torch", extras = ["device-gfx1151", "device-gfx1201"], specifier = "==2.13.0+rocm10.1.0", index = "https://stable.repo.amd.com/rocm/whl-next/" },
     { name = "torchaudio", specifier = "==2.11.0.2+rocm10.1.0", index = "https://stable.repo.amd.com/rocm/whl-next/" },
-    { name = "torchvision", extras = ["device-gfx1151"], specifier = "==0.28.0+rocm10.1.0", index = "https://stable.repo.amd.com/rocm/whl-next/" },
+    { name = "torchvision", extras = ["device-gfx1151", "device-gfx1201"], specifier = "==0.28.0+rocm10.1.0", index = "https://stable.repo.amd.com/rocm/whl-next/" },
     { name = "triton", specifier = "==3.8.0+git669b31ac.rocm10.1.0", index = "https://stable.repo.amd.com/rocm/whl-next/" },
     { name = "vllm", url = "https://rocm.frameworks.amd.com/whl-multi-arch/vllm/vllm/vllm-0.29.1.dev0%2Brocm10.1.0.g98dff2a81.d20261002-cp314-cp314-linux_x86_64.whl" },
 ]
@@ -2549,6 +2592,17 @@ dependencies = [
 ]
 wheels = [
     { url = "https://stable.repo.amd.com/rocm/core/whl-next/rocm-sdk-device-gfx1151/rocm_sdk_device_gfx1151-10.1.0-py3-none-linux_x86_64.whl" },
+]
+
+[[package]]
+name = "rocm-sdk-device-gfx1201"
+version = "10.1.0"
+source = { registry = "https://stable.repo.amd.com/rocm/whl-next/" }
+dependencies = [
+    { name = "rocm-sdk-libraries", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+]
+wheels = [
+    { url = "https://stable.repo.amd.com/rocm/core/whl-next/rocm-sdk-device-gfx1201/rocm_sdk_device_gfx1201-10.1.0-py3-none-linux_x86_64.whl" },
 ]
 
 [[package]]

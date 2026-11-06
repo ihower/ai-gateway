@@ -1,6 +1,6 @@
 # llama-nemotron-rerank-1b-v2-rocm
 
-[llama-nemotron-rerank-1b-v2-cuda](../llama-nemotron-rerank-1b-v2-cuda) 的 **AMD ROCm 版**：在 Radeon 8060S（Strix Halo，gfx1151）上用 vLLM 架設 [nvidia/llama-nemotron-rerank-1b-v2](https://huggingface.co/nvidia/llama-nemotron-rerank-1b-v2) 的 reranker API。
+[llama-nemotron-rerank-1b-v2-cuda](../llama-nemotron-rerank-1b-v2-cuda) 的 **AMD ROCm 版**：在 AMD GPU 上用 vLLM 架設 [nvidia/llama-nemotron-rerank-1b-v2](https://huggingface.co/nvidia/llama-nemotron-rerank-1b-v2) 的 reranker API。支援 Radeon 8060S（Strix Halo 內建，gfx1151）和 Radeon RX 9070 XT（gfx1201）。
 
 `/rerank`、`/score`、預設截斷、分數校準 `sigmoid(logit / 4)` 的行為都和 NVIDIA 版相同。API 用法請看 [NVIDIA 版 README](../llama-nemotron-rerank-1b-v2-cuda/README.md#api)，把 port 換成 12363 即可。
 
@@ -8,15 +8,15 @@
 
 | | NVIDIA 版 | ROCm 版（本專案） |
 |---|---|---|
-| GPU | RTX 5070 Ti / 5080 | Radeon 8060S（gfx1151，統一記憶體） |
+| GPU | RTX 5070 Ti / 5080 | Radeon 8060S（gfx1151，統一記憶體）、RX 9070 XT（gfx1201） |
 | 精度 | FP8（線上 12361、12362） | **BF16**，可選 INT8 |
 | Python | 3.12 | **3.14**（AMD vLLM wheel 只有 cp314） |
 | torch | PyPI | 2.13.0+rocm10.1.0 |
 | vLLM | 0.31.0 | 0.29.1.dev0+rocm10.1.0（AMD 官方 wheel） |
 | 分數校準 | `--pooler-config logit_sigma` | `ScoreCalibrationMiddleware`（尚未改用 0.29 的 `logit_sigma`） |
 | 預設 port | 12361 | **12363** |
-| 選 GPU | `--gpu N` | 無 |
-| 量化 | `start_fp8.sh` | `start_int8.sh`（gfx1151 不支援原生 FP8） |
+| 選 GPU | `--gpu N` | `--gpu N`（HIP 編號，`--list-gpus` 查詢） |
+| 量化 | `start_fp8.sh` | `start_int8.sh`（gfx1151 不支援原生 FP8；gfx1201 未測試） |
 
 ## 和線上 FP8 的分數差距
 
@@ -62,6 +62,20 @@ uv sync
 
 會從 AMD 的 index 下載 ROCm SDK、torch 和 vLLM，`.venv` 約 19 GB。版本全部釘死在 `pyproject.toml`，彼此 ABI 必須一致，不要單獨升級其中一個。
 
+## 選擇 GPU
+
+這台機器有兩張 AMD GPU，用 HIP 裝置編號選擇（HIP 是 AMD 對應 CUDA 的 GPU API）：
+
+```bash
+./start.sh --list-gpus   # 列出編號，例如 0: RX 9070 XT、1: Radeon 8060S
+./start.sh --gpu 0       # RX 9070 XT
+./start.sh --gpu 1       # Radeon 8060S
+```
+
+`--gpu N` 等同設定 `HIP_VISIBLE_DEVICES=N`。都沒指定時用第 0 張。編號依 PCI 順序，增減顯卡後可能改變，請先用 `--list-gpus` 確認。啟動時會印出實際使用的 GPU 型號。
+
+`GPU_MEMORY_UTILIZATION` 未指定時依 GPU 總記憶體自動計算（`GPU_MEMORY_TARGET_GIB / 總記憶體`）：8060S 約 0.054、9070 XT 約 0.377。
+
 看到 `Application startup complete` 就可以呼叫，預設監聽 `0.0.0.0:12363`。額外參數會原樣傳給 `vllm serve`。
 
 | 環境變數 | 預設值 | 說明 |
@@ -72,7 +86,9 @@ uv sync
 | `DTYPE` | `auto` | `auto` 即 BF16 |
 | `MAX_MODEL_LEN` | `4096` | 每組 query + 文件的 token 上限（模型官方上限 8192） |
 | `KV_CACHE_MEMORY_BYTES` | `128M` | 每 4096 tokens 需要 128M，調高 `MAX_MODEL_LEN` 時要一併調高 |
-| `GPU_MEMORY_UTILIZATION` | `0.05` | 只用於啟動時的剩餘記憶體檢查 |
+| `GPU_MEMORY_UTILIZATION` | 自動計算 | 只用於啟動時的剩餘記憶體檢查，指定時優先 |
+| `GPU_MEMORY_TARGET_GIB` | `6` | 自動計算 `GPU_MEMORY_UTILIZATION` 時的目標記憶體 |
+| `HIP_VISIBLE_DEVICES` | 未設定 | 選 GPU（`--gpu` 優先） |
 | `CHAT_TEMPLATE` | `nemotron-rerank.jinja` | score template，**必要**，缺少時分數錯誤 |
 | `LOGIT_SIGMA` | `4.0` | 分數校準 `sigmoid(logit / LOGIT_SIGMA)`，必須大於 0 |
 | `VLLM_PROCESS_NAME_PREFIX` | `nemotron-rerank-rocm` | 程序名稱前綴 |
