@@ -1,5 +1,15 @@
 # ai-gateway
 
+[ihower](https://ihower.tw) 的地端 AI 推論工具箱：整合 embedding、reranking 與 decision 服務，包含 Rust API gateway、NVIDIA CUDA / AMD ROCm 推論後端，以及以 Python FastAPI 實作的 fallback 服務。
+
+當地端 GPU 後端不可用時，fallback 提供以下替代方案：
+
+- **Embedding**：模型體積小，可暫時用 CPU 推論維持服務，但吞吐量較低。
+- **Reranker**：改用 Cohere API。分數尺度與地端模型不同，不宜沿用相同門檻，但仍可用於相關性排序。
+- **Decision**：改用 Jev API，維持相同的 SystemOne 請求與回應格式。
+
+## Gateway 功能
+
 以 Rust 實作的 API gateway，前置 embedding（OpenAI 格式）、reranker（Cohere 格式）與 decision（Jev / SystemOne 格式）三類後端。完整規格見 [SPEC.md](SPEC.md)。
 
 - Embedding / reranker：多筆 input / documents 平分到各後端並行處理，再合併回應
