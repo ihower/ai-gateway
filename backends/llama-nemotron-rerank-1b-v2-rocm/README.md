@@ -48,11 +48,12 @@
 
 | | 分數平均差 | 最大差 | 第一名 |
 |---|---|---|---|
-| 9070 XT FP8（`start_fp8.sh` 的設定） | 0.0022 | 0.023 | 6/6 |
+| 9070 XT FP8（`start_fp8.sh`，關閉 CUDA graph） | 0.0027 | 0.052 | 6/6 |
+| 9070 XT FP8（開啟 CUDA graph） | 0.0022 | 0.023 | 6/6 |
 | 5080 FP8 eager（同一台 NVIDIA、只換模式） | 0.0028 | 0.028 | 6/6 |
 | 9070 XT BF16 | 0.0038 | 0.052 | 6/6 |
 
-和 12361 的差距已經小於 NVIDIA 自己 compile 和 eager 之間的差距，跨廠牌的 kernel 不可能逐位元相同。權重記憶體 1.41 GiB（BF16 為 2.32 GiB），8 份長文件 0.91 秒（BF16 為 1.06 秒）。
+和 12361 的差距與 NVIDIA 自己 compile 和 eager 之間的差距相當，跨廠牌的 kernel 不可能逐位元相同。權重記憶體 1.41 GiB（BF16 為 2.32 GiB），8 份長文件 0.91 秒（BF16 為 1.06 秒）。
 
 ## INT8（`start_int8.sh`）
 
@@ -98,6 +99,8 @@ uv sync
 `--gpu N` 等同設定 `HIP_VISIBLE_DEVICES=N`。都沒指定時用第 0 張。編號依 PCI 順序，增減顯卡後可能改變，請先用 `--list-gpus` 確認。啟動時會印出實際使用的 GPU 型號。
 
 `GPU_MEMORY_UTILIZATION` 未指定時依 GPU 總記憶體自動計算（`GPU_MEMORY_TARGET_GIB / 總記憶體`）：8060S 約 0.054、9070 XT 約 0.377。
+
+`start.sh` 會關閉 CUDA graph（`cudagraph_mode: NONE`），保留 torch.compile。ROCm 的 graph capture 每次啟動要 2～25 分鐘（5080 只要 2 秒），而且沒有快取。graph 只用在 512 tokens 以下的批次，reranker 通常用不到。關掉後約 30 秒就能啟動。
 
 看到 `Application startup complete` 就可以呼叫，預設監聽 `0.0.0.0:12363`。額外參數會原樣傳給 `vllm serve`。
 

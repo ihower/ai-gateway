@@ -116,6 +116,11 @@ for ((i = 0; i < ${#VLLM_ARGS[@]}; i++)); do
   fi
 done
 
+# 關閉 CUDA graph，保留 torch.compile（有快取）。ROCm 的 graph capture 很慢：BF16 每次啟動 2～25 分鐘、
+# FP8 8～20 分鐘（5080 只要 2 秒），而且沒有快取。graph 只用在 512 tokens 以下的批次，
+# reranker 一次送多份文件，通常用不到。呼叫端傳的 --compilation-config 放在後面，可以覆寫
+VLLM_ARGS=(--compilation-config '{"cudagraph_mode": "NONE"}' ${VLLM_ARGS[@]+"${VLLM_ARGS[@]}"})
+
 MIDDLEWARE_ARGS=(--middleware rerank_middleware.DefaultTruncationMiddleware)
 if [[ "$SCORE_CALIBRATION" == native ]]; then
   VLLM_ARGS=(--pooler-config "{\"logit_sigma\": $LOGIT_SIGMA}" ${VLLM_ARGS[@]+"${VLLM_ARGS[@]}"})
