@@ -2,19 +2,32 @@
 name = "voyage-4-nano-rocm"
 version = "0.1.0"
 license = "MIT"
-requires-python = "==3.13.*"
+description = "vLLM embedding API for voyageai/voyage-4-nano on AMD ROCm (gfx1151 / gfx1201)"
+# torchvision 0.28.0 排除 3.14.1，下限要避開才能解析
+requires-python = ">=3.14.2,<3.15"
 dependencies = [
     "orjson>=3.13.0",
-    # 以下皆為 AMD 官方 gfx1151（Strix Halo）ROCm 7.13 版本，彼此 ABI 必須一致
-    "torch==2.10.0+rocm7.13.0",
-    "torchvision==0.25.0+rocm7.13.0",
-    "torchaudio==2.10.0+rocm7.13.0",
-    # rocm 與 rocm-sdk-* 列為直接依賴，uv 才會從 AMD index 取（sources 只作用於直接依賴）
-    "rocm[libraries]==7.13.0",
-    "rocm-sdk-core==7.13.0",
-    "rocm-sdk-libraries-gfx1151==7.13.0",
-    "triton==3.6.0+rocm7.13.0",
-    "flash-attn",
+    # 以下皆為 AMD 官方 ROCm 10.1 版本，彼此 ABI 必須一致
+    # 同時裝兩種 GPU 的 kernel：gfx1151（Radeon 8060S / Strix Halo）、gfx1201（Radeon RX 9070 XT）
+    "torch[device-gfx1151,device-gfx1201]==2.13.0+rocm10.1.0",
+    "torchvision[device-gfx1151,device-gfx1201]==0.28.0+rocm10.1.0",
+    "torchaudio==2.11.0.2+rocm10.1.0",
+    # 下列傳遞依賴列為直接依賴，uv 才會從 AMD index 取（sources 只作用於直接依賴）
+    "amd-torch-device-gfx1151==2.13.0+rocm10.1.0",
+    "amd-torch-device-gfx115x==2.13.0+rocm10.1.0",
+    "amd-torchvision-device-gfx1151==0.28.0+rocm10.1.0",
+    "amd-torch-device-gfx1201==2.13.0+rocm10.1.0",
+    "amd-torch-device-gfx12-0==2.13.0+rocm10.1.0",
+    "amd-torchvision-device-gfx1201==0.28.0+rocm10.1.0",
+    "rocm[libraries]==10.1.0",
+    "rocm-bootstrap",
+    "rocm-sdk-core==10.1.0",
+    "rocm-sdk-libraries==10.1.0",
+    "rocm-sdk-device-gfx1151==10.1.0",
+    "rocm-sdk-device-gfx1201==10.1.0",
+    "triton==3.8.0+git669b31ac.rocm10.1.0",
+    "flash-attn==2.8.3",
+    "amd-aiter==0.1.22.post2.dev0+gb4d9154d1.d20261002",
     "vllm",
 ]
 
@@ -26,28 +39,47 @@ dev = [
 ]
 
 [tool.uv.sources]
-torch = { index = "rocm-gfx1151" }
-torchvision = { index = "rocm-gfx1151" }
-torchaudio = { index = "rocm-gfx1151" }
-rocm = { index = "rocm-gfx1151" }
-rocm-sdk-core = { index = "rocm-gfx1151" }
-rocm-sdk-libraries-gfx1151 = { index = "rocm-gfx1151" }
-triton = { index = "rocm-gfx1151" }
-flash-attn = { url = "https://rocm.frameworks.amd.com/whl/gfx1151/flash_attn-2.8.3-py3-none-any.whl" }
-vllm = { url = "https://rocm.frameworks.amd.com/whl/gfx1151/vllm-0.19.1.dev3%2Brocm7.13.0.g72ed2b398.d20260513-cp313-cp313-linux_x86_64.whl" }
+torch = { index = "rocm-whl-next" }
+torchvision = { index = "rocm-whl-next" }
+torchaudio = { index = "rocm-whl-next" }
+amd-torch-device-gfx1151 = { index = "rocm-whl-next" }
+amd-torch-device-gfx115x = { index = "rocm-whl-next" }
+amd-torchvision-device-gfx1151 = { index = "rocm-whl-next" }
+amd-torch-device-gfx1201 = { index = "rocm-whl-next" }
+amd-torch-device-gfx12-0 = { index = "rocm-whl-next" }
+amd-torchvision-device-gfx1201 = { index = "rocm-whl-next" }
+rocm = { index = "rocm-whl-next" }
+rocm-bootstrap = { index = "rocm-whl-next" }
+rocm-sdk-core = { index = "rocm-whl-next" }
+rocm-sdk-libraries = { index = "rocm-whl-next" }
+rocm-sdk-device-gfx1151 = { index = "rocm-whl-next" }
+rocm-sdk-device-gfx1201 = { index = "rocm-whl-next" }
+triton = { index = "rocm-whl-next" }
+flash-attn = { index = "rocm-vllm" }
+amd-aiter = { index = "rocm-vllm" }
+vllm = { url = "https://rocm.frameworks.amd.com/whl-multi-arch/vllm/vllm/vllm-0.29.1.dev0%2Brocm10.1.0.g98dff2a81.d20261002-cp314-cp314-linux_x86_64.whl" }
 
 [[tool.uv.index]]
-name = "rocm-gfx1151"
-url = "https://repo.amd.com/rocm/whl/gfx1151/"
+name = "rocm-whl-next"
+url = "https://stable.repo.amd.com/rocm/whl-next/"
+explicit = true
+
+[[tool.uv.index]]
+name = "rocm-vllm"
+url = "https://rocm.frameworks.amd.com/whl-multi-arch/vllm/"
 explicit = true
 
 [tool.uv]
 prerelease = "allow"
-# ROCm torch 由上面的 index 提供，避免其他套件從 PyPI 拉 CUDA 版
+# 只解析這台機器的平台：triton 沒有 Windows wheel，vLLM wheel 只有 linux_x86_64
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
 override-dependencies = [
-    "torch==2.10.0+rocm7.13.0",
-    "torchvision==0.25.0+rocm7.13.0",
-    "torchaudio==2.10.0+rocm7.13.0",
+    # ROCm torch 由上面的 index 提供，避免其他套件從 PyPI 拉 CUDA 版
+    "torch==2.13.0+rocm10.1.0",
+    "torchvision==0.28.0+rocm10.1.0",
+    "torchaudio==2.11.0.2+rocm10.1.0",
+    # AMD 文件的 workaround：vLLM wheel 宣告 2.10.1，但文件要求升到 2.12.1
+    "tensorizer==2.12.1",
 ]
 
 # 把本專案裝進 venv，讓下面的 entry point 生效

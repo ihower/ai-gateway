@@ -44,7 +44,7 @@ def client_error_payload(exc: Exception) -> tuple[int, dict] | None:
 
     延後 import：這支檔案要能在沒有載入 vLLM 的環境下 import（例如單元測試）。
     """
-    from vllm.entrypoints.utils import create_error_response
+    from vllm.entrypoints.serve.exception_handling.error_response import create_error_response
 
     err = create_error_response(exc)
     if not 400 <= err.error.code < 500:
