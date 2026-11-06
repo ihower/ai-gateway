@@ -25,8 +25,16 @@ GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-}"
 GPU_MEMORY_TARGET_GIB="${GPU_MEMORY_TARGET_GIB:-6}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-4096}"
 CHAT_TEMPLATE="${CHAT_TEMPLATE:-$SCRIPT_DIR/nemotron-rerank.jinja}"
-# 分數校準 sigmoid(logit / LOGIT_SIGMA)，由 rerank_middleware.ScoreCalibrationMiddleware 處理
+# 分數校準 sigmoid(logit / LOGIT_SIGMA)，處理方式由 SCORE_CALIBRATION 決定：
+# - middleware（預設）：rerank_middleware.ScoreCalibrationMiddleware 用 float64 計算
+# - native：vLLM 原生 --pooler-config logit_sigma，結果為 BF16 精度，和 NVIDIA 版（12361）相同
+#   start_fp8.sh 預設用 native，才能和 12361 的分數對齊
 export LOGIT_SIGMA="${LOGIT_SIGMA:-4.0}"
+SCORE_CALIBRATION="${SCORE_CALIBRATION:-middleware}"
+case "$SCORE_CALIBRATION" in
+  middleware|native) ;;
+  *) echo "SCORE_CALIBRATION 只能是 middleware 或 native：$SCORE_CALIBRATION" >&2; exit 1 ;;
+esac
 
 # 解析 --gpu / --port（支援 `--opt 值` 與 `--opt=值`）與 --list-gpus，其餘參數原樣傳給 vllm serve
 VLLM_ARGS=()
@@ -62,10 +70,11 @@ AMD_SMI_PATH="$SCRIPT_DIR/.venv/lib/python3.14/site-packages/_rocm_sdk_core/shar
 export PYTHONPATH="$SCRIPT_DIR:$AMD_SMI_PATH${PYTHONPATH:+:$PYTHONPATH}"
 export FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE
 
-# 只載入 force_rocm platform plugin（見 vllm_force_rocm.py）：
-# - 這台機器同時有 NVIDIA GPU，vLLM 內建偵測會同時啟用 cuda 與 rocm 而報錯
-# - 順便擋掉 amd-quark 的 general plugin，它和這版 vLLM 不相容
-export VLLM_PLUGINS="${VLLM_PLUGINS:-force_rocm}"
+# 只載入本專案的 plugin：
+# - force_rocm（vllm_force_rocm.py）：這台機器同時有 NVIDIA GPU，vLLM 內建偵測會同時啟用 cuda 與 rocm 而報錯
+# - rocm_fp8_pad（vllm_rocm_fp8_pad.py）：FP8 時讓 ROCm 的算法和 NVIDIA 一致；沒開 FP8 時不影響
+# 列出白名單也順便擋掉 amd-quark 的 general plugin，它和這版 vLLM 不相容
+export VLLM_PLUGINS="${VLLM_PLUGINS:-force_rocm,rocm_fp8_pad}"
 
 # 外面 shell 若為了 NVIDIA 設了 CUDA_VISIBLE_DEVICES，HIP 也會吃這個變數而找不到 AMD GPU
 unset CUDA_VISIBLE_DEVICES
@@ -97,6 +106,23 @@ if [[ -z "$GPU_MEMORY_UTILIZATION" ]]; then
 fi
 echo "使用 GPU：$GPU_NAME（$GPU_ARCH，$(awk -v m="$GPU_TOTAL_BYTES" 'BEGIN { printf "%.1f", m / 1073741824 }') GiB，HIP_VISIBLE_DEVICES=${HIP_VISIBLE_DEVICES:-未設定}），GPU_MEMORY_UTILIZATION=$GPU_MEMORY_UTILIZATION" >&2
 
+# FP8 需要 RDNA4（gfx12）以上；gfx1151 的 torch._scaled_mm 和 vLLM FP8 kernel 都不支援
+for ((i = 0; i < ${#VLLM_ARGS[@]}; i++)); do
+  arg="${VLLM_ARGS[$i]}"
+  [[ "$arg" == --quantization ]] && arg="--quantization=${VLLM_ARGS[$((i + 1))]:-}"
+  if [[ "$arg" == --quantization=fp8* && "$GPU_ARCH" != gfx12* ]]; then
+    echo "$GPU_NAME（$GPU_ARCH）不支援 FP8，請用 --gpu 選 RX 9070 XT（gfx1201），或改用 start_int8.sh" >&2
+    exit 1
+  fi
+done
+
+MIDDLEWARE_ARGS=(--middleware rerank_middleware.DefaultTruncationMiddleware)
+if [[ "$SCORE_CALIBRATION" == native ]]; then
+  VLLM_ARGS=(--pooler-config "{\"logit_sigma\": $LOGIT_SIGMA}" ${VLLM_ARGS[@]+"${VLLM_ARGS[@]}"})
+else
+  MIDDLEWARE_ARGS+=(--middleware rerank_middleware.ScoreCalibrationMiddleware)
+fi
+
 # 程序名稱前綴，ps 會顯示為 nemotron-rerank-rocm::EngineCore
 export VLLM_PROCESS_NAME_PREFIX="${VLLM_PROCESS_NAME_PREFIX:-nemotron-rerank-rocm}"
 
@@ -109,6 +135,5 @@ exec uv run --project "$SCRIPT_DIR" vllm serve "$MODEL" \
   --max-model-len "$MAX_MODEL_LEN" \
   --trust-remote-code \
   --chat-template "$CHAT_TEMPLATE" \
-  --middleware rerank_middleware.DefaultTruncationMiddleware \
-  --middleware rerank_middleware.ScoreCalibrationMiddleware \
+  "${MIDDLEWARE_ARGS[@]}" \
   ${VLLM_ARGS[@]+"${VLLM_ARGS[@]}"}

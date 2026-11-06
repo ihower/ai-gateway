@@ -85,12 +85,16 @@ override-dependencies = [
 [project.entry-points."vllm.platform_plugins"]
 force_rocm = "vllm_force_rocm:force_rocm"
 
+# ROCm FP8 kernel 補齊輸出維度，讓 score 層（2048 → 1）也能用 FP8（見 vllm_rocm_fp8_pad.py）
+[project.entry-points."vllm.general_plugins"]
+rocm_fp8_pad = "vllm_rocm_fp8_pad:rocm_fp8_pad"
+
 [build-system]
 requires = ["setuptools>=75"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = ["quantize_int8", "rerank_middleware", "vllm_force_rocm"]
+py-modules = ["quantize_int8", "rerank_middleware", "vllm_force_rocm", "vllm_rocm_fp8_pad"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

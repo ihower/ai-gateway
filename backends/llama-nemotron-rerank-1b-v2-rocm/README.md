@@ -9,14 +9,14 @@
 | | NVIDIA 版 | ROCm 版（本專案） |
 |---|---|---|
 | GPU | RTX 5070 Ti / 5080 | Radeon 8060S（gfx1151，統一記憶體）、RX 9070 XT（gfx1201） |
-| 精度 | FP8（線上 12361、12362） | **BF16**，可選 INT8 |
+| 精度 | FP8（線上 12361、12362） | **BF16**，可選 INT8；9070 XT 可選 FP8 |
 | Python | 3.12 | **3.14**（AMD vLLM wheel 只有 cp314） |
 | torch | PyPI | 2.13.0+rocm10.1.0 |
 | vLLM | 0.31.0 | 0.29.1.dev0+rocm10.1.0（AMD 官方 wheel） |
 | 分數校準 | `--pooler-config logit_sigma` | `ScoreCalibrationMiddleware`（尚未改用 0.29 的 `logit_sigma`） |
 | 預設 port | 12361 | **12363** |
 | 選 GPU | `--gpu N` | `--gpu N`（HIP 編號，`--list-gpus` 查詢） |
-| 量化 | `start_fp8.sh` | `start_int8.sh`（gfx1151 不支援原生 FP8；gfx1201 未測試） |
+| 量化 | `start_fp8.sh` | `start_fp8.sh`（僅 gfx1201）、`start_int8.sh` |
 
 ## 和線上 FP8 的分數差距
 
@@ -30,6 +30,29 @@
 | 前三名集合一致 | 3/5（不一致的都是第三名，分數約 0.03～0.04 的無關文件） |
 
 以上是 vLLM 0.19.1 時的結果，資料量不大，僅供參考。詳細比較和不跑 FP8 的原因見 [implementation-notes](docs/implementation-notes.md)。
+
+## FP8（`start_fp8.sh`，僅 RX 9070 XT）
+
+```bash
+./start_fp8.sh --gpu 0
+```
+
+和 12361 一樣用 `--quantization fp8_per_tensor`，並對齊 NVIDIA 版的算法：
+
+- `vllm_rocm_fp8_pad.py`（vLLM general plugin）：ROCm 上 vLLM 預設用 per-tensor 量化 activation，整批共用一個 scale，分數會受同一批文件影響。這個 plugin 改成和 CUDA 相同的逐 token 量化，並把 `score` 層（2048 → 1）補齊到 16 的倍數，讓它也走 FP8。
+- `SCORE_CALIBRATION=native`：用 vLLM 原生 `logit_sigma`，分數和 12361 一樣是 BF16 精度。
+
+8060S（gfx1151）不支援 FP8，`start.sh` 會直接報錯。
+
+和 12361 比對 6 個 query × 23 份文件（共 138 組）：
+
+| | 分數平均差 | 最大差 | 第一名 |
+|---|---|---|---|
+| 9070 XT FP8（`start_fp8.sh` 的設定） | 0.0022 | 0.023 | 6/6 |
+| 5080 FP8 eager（同一台 NVIDIA、只換模式） | 0.0028 | 0.028 | 6/6 |
+| 9070 XT BF16 | 0.0038 | 0.052 | 6/6 |
+
+和 12361 的差距已經小於 NVIDIA 自己 compile 和 eager 之間的差距，跨廠牌的 kernel 不可能逐位元相同。權重記憶體 1.41 GiB（BF16 為 2.32 GiB），8 份長文件 0.91 秒（BF16 為 1.06 秒）。
 
 ## INT8（`start_int8.sh`）
 
@@ -89,6 +112,7 @@ uv sync
 | `GPU_MEMORY_UTILIZATION` | 自動計算 | 只用於啟動時的剩餘記憶體檢查，指定時優先 |
 | `GPU_MEMORY_TARGET_GIB` | `6` | 自動計算 `GPU_MEMORY_UTILIZATION` 時的目標記憶體 |
 | `HIP_VISIBLE_DEVICES` | 未設定 | 選 GPU（`--gpu` 優先） |
+| `SCORE_CALIBRATION` | `middleware` | 分數校準方式：`middleware` 或 `native`（vLLM `logit_sigma`；`start_fp8.sh` 預設） |
 | `CHAT_TEMPLATE` | `nemotron-rerank.jinja` | score template，**必要**，缺少時分數錯誤 |
 | `LOGIT_SIGMA` | `4.0` | 分數校準 `sigmoid(logit / LOGIT_SIGMA)`，必須大於 0 |
 | `VLLM_PROCESS_NAME_PREFIX` | `nemotron-rerank-rocm` | 程序名稱前綴 |
@@ -117,6 +141,8 @@ uv run python test_client.py --compare http://localhost:12361   # 另外和 NVID
 |---|---|
 | `start.sh` | 設定 ROCm 環境並啟動 vLLM |
 | `start_int8.sh` | 以 INT8 checkpoint 啟動 |
+| `start_fp8.sh` | 以 FP8 啟動（僅 gfx1201） |
+| `vllm_rocm_fp8_pad.py` | vLLM plugin，讓 ROCm FP8 的算法和 NVIDIA 一致 |
 | `quantize_int8.py` | 把 BF16 權重轉成 INT8 checkpoint |
 | `vllm_force_rocm.py` | vLLM platform plugin，強制使用 ROCm |
 | `rerank_middleware.py` | 預設截斷、分數校準 middleware |
