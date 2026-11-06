@@ -10,10 +10,11 @@
 
 ## 後端專案
 
-四個 GPU 後端統一放在 `backends/`，與 gateway 一起由此 Git repo 管理：
+GPU 後端放在 `backends/`，Python FastAPI fallback 放在根目錄的 `fallback-fastapi/`，由此 Git repo 統一管理：
 
 | 子目錄 | 用途 |
 |--------|------|
+| [fallback-fastapi](#fallback) | CPU embedding 與 Cohere / Jev fallback |
 | [voyage-4-nano-cuda](backends/voyage-4-nano-cuda/README.md) | NVIDIA CUDA embedding |
 | [voyage-4-nano-rocm](backends/voyage-4-nano-rocm/README.md) | AMD ROCm embedding |
 | [llama-nemotron-rerank-1b-v2-cuda](backends/llama-nemotron-rerank-1b-v2-cuda/README.md) | NVIDIA CUDA reranker |
