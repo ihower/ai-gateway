@@ -60,19 +60,19 @@ uv run python -c "from sentence_transformers import SentenceTransformer as S; S(
 
 ## 4. 設定檔放在 repo 外面
 
-`config.yaml` 有進 git，若直接在 server 上修改，之後 `git pull` 會衝突。請複製一份到 repo 外面再修改：
+Git 只追蹤通用範例 `config.yaml.example`，本機的 `config.yaml` 已被忽略。以下部署流程將設定放在 repo 外，首次部署時從範例複製後再修改；既有部署請保留原設定：
 
 ```bash
 mkdir -p ~/ai-gateway-config
-cp ~/ai-gateway/config.yaml ~/ai-gateway-config/config.yaml
+cp ~/ai-gateway/config.yaml.example ~/ai-gateway-config/config.yaml
 ```
 
 需要確認的項目：
 
-- **後端位址**：預設都是 `127.0.0.1:*`，請確認新 server 連得到。
+- **後端位址**：範例使用 `127.0.0.1:*`，請改為實際後端位址，並刪除未部署的項目；範例權重相同，可依容量調整。
 - **fallback 位址**：`127.0.0.1:12359`，前提是 fallback server 與 gateway 在同一台機器上（照本文件部署即是如此）。
 - **`control_socket`**：`run/control.sock` 是相對於設定檔所在目錄，會放在 `~/ai-gateway-config/run/`，目錄會自動建立。
-- **`admin_listen`**：預設為 `0.0.0.0:54322`，會綁定所有網路介面。管理埠沒有驗證，建議改成 `127.0.0.1:54322`，或用防火牆擋住。
+- **監聽位址**：範例的 API 與管理埠都綁定 `127.0.0.1`。兩者沒有驗證；如需遠端存取，請另設驗證與網路存取限制。
 
 執行 CLI（`status`、`reload`、`check`）時也要能找到這份設定，建議寫進 `~/.bashrc`：
 
@@ -173,7 +173,7 @@ sudo systemctl restart ai-gateway-fallback ai-gateway   # binary 或 Python 程�
 sudo systemctl reload ai-gateway
 ```
 
-注意：`config.yaml` 在 repo 裡的版本更新時，不會自動套用到 `~/ai-gateway-config/config.yaml`，需要自行比對合併（例如 `diff ~/ai-gateway/config.yaml ~/ai-gateway-config/config.yaml`）。
+注意：`config.yaml.example` 更新時，不會自動套用到部署設定，需要自行比對合併（例如 `diff ~/ai-gateway/config.yaml.example ~/ai-gateway-config/config.yaml`）。
 
 ## 9. 新 server 需要確認的事項
 

@@ -34,6 +34,9 @@ GPU 後端放在 `backends/`，Python FastAPI fallback 放在根目錄的 `fallb
 ## 使用
 
 ```bash
+# 首次使用：複製範例並依部署環境修改；config.yaml 已被 Git 忽略
+cp config.yaml.example config.yaml
+
 # 啟動（預設讀 ./config.yaml，可用 --config 或 AI_GATEWAY_CONFIG 指定）
 ./ai-gateway serve
 

@@ -1,0 +1,68 @@
+# 複製為 config.yaml 後，依實際部署調整後端位址與數量。
+# 此範例假設服務在同一台主機；刪除未啟動的後端項目。
+# Gateway 沒有 API key 驗證，對外提供服務前請另設驗證與網路存取限制。
+# fallback 為選填；轉送 Cohere / Jev 需設定 API key，並會產生 API 費用。
+server:
+  listen: "127.0.0.1:54321"
+  admin_listen: "127.0.0.1:54322"     # 管理端點（唯讀查詢），只綁 localhost
+  control_socket: "run/control.sock" # CLI reload / status 使用；相對路徑以本檔所在目錄為基準
+  shutdown_timeout_secs: 60
+
+defaults:
+  connect_timeout_ms: 1000
+  request_timeout_ms: 30000
+  max_retries: 1
+  unhealthy_threshold: 2
+  unhealthy_cooldown_secs: 900
+
+probe:
+  timeout_ms: 10000
+
+services:
+  # weight：依比例分配。embedding / reranker 拆分時依權重切份數，decision 依權重輪流分派。
+  embedding:
+    backends:
+      - url: "http://127.0.0.1:12351"
+      - url: "http://127.0.0.1:12352"
+      - url: "http://127.0.0.1:12353"
+    fallback:                        # 所有一般後端都失效時才使用：CPU 跑的 voyage-4-nano（fallback-fastapi/server.py）
+      url: "http://127.0.0.1:12359"
+      request_timeout_ms: 120000     # CPU 推論較慢
+
+  reranker:
+    chunking:                        # 超過 max_chars 字元的 document 切段分別算分，取最高分；fallback（Cohere）收原始 request、不切
+      max_chars: 2000
+      overlap_chars: 200
+    backends:
+      - url: "http://127.0.0.1:12361"
+        weight: 1
+      - url: "http://127.0.0.1:12362"
+        weight: 1
+      - url: "http://127.0.0.1:12363"
+        weight: 1
+    fallback:                        # 所有一般後端都失效時才使用：Cohere rerank-v4.0-fast（經 fallback-fastapi/server.py 轉送）
+      url: "http://127.0.0.1:12359"
+      request_timeout_ms: 60000
+
+  decision:
+    backends:
+      - url: "http://127.0.0.1:12371"
+        weight: 1
+      - url: "http://127.0.0.1:12372"
+        weight: 1
+    fallback:                        # 所有一般後端都失效時才使用：Jev jev-1.14.0（經 fallback-fastapi/server.py 轉送）
+      url: "http://127.0.0.1:12359"
+      request_timeout_ms: 60000
+
+  decision_reranker:                 # POST /decision/v2/rerank：Cohere v2 rerank，每份 document 問 decision 一個是非題
+    # 沒有自己的後端：共用上面 decision 的後端、權重、健康狀態與 fallback（Jev）
+    state_template: "Query: {query}\n\nDocument: {document}"
+    instructions: "Does the document contain enough specific facts, figures, or explicit causal explanations about the entities and changes asked about to answer the query?"
+    max_documents: 100
+    max_concurrency: 16              # 單一 rerank 同時送出的 decision 呼叫上限，請依後端並行處理能力調整
+    use_fallback: true               # 一般後端失敗時整包改送 Jev（每一段一次付費呼叫）
+    chunking:                        # 超過 max_chars 字元的 document 切段，每段一個 decision 呼叫，取最高分；Jev 也照樣切
+      max_chars: 2000
+      overlap_chars: 200
+    # 或改用截斷（與 chunking 只能擇一，兩者都設定會拒絕啟動）：只看前 N 個字元，回傳的 document 仍是原文
+    # max_document_chars: 8000
