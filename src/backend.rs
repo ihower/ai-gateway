@@ -22,6 +22,8 @@ pub const LATENCY_BUCKETS: [f64; 12] = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5
 #[derive(Default)]
 pub struct BackendStats {
     pub requests: AtomicU64,
+    /// 成功處理的筆數（embedding 的 input、rerank 的 document 或切段）；拆分時各後端只計自己那一份。
+    pub items: AtomicU64,
     pub errors: AtomicU64,
     pub inflight: AtomicI64,
     pub latency_buckets: [AtomicU64; LATENCY_BUCKETS.len()],
@@ -33,6 +35,7 @@ impl BackendStats {
     /// 累計數字歸零（`ai-gateway reset`）。`inflight` 是即時數量，不歸零，否則進行中的 request 結束時會變成負數。
     pub fn reset(&self) {
         self.requests.store(0, Ordering::Relaxed);
+        self.items.store(0, Ordering::Relaxed);
         self.errors.store(0, Ordering::Relaxed);
         for b in &self.latency_buckets {
             b.store(0, Ordering::Relaxed);
@@ -136,6 +139,11 @@ impl Backend {
         self.stats.requests.fetch_add(1, Ordering::Relaxed);
         self.stats.inflight.fetch_add(1, Ordering::Relaxed);
         InflightGuard { stats: self.stats.clone(), started: Instant::now() }
+    }
+
+    /// 記錄這次呼叫成功處理的筆數。
+    pub fn record_items(&self, n: usize) {
+        self.stats.items.fetch_add(n as u64, Ordering::Relaxed);
     }
 
     pub fn record_success(&self) {
@@ -323,6 +331,7 @@ impl Pool {
                         consecutive_failures: b.consecutive_failures(),
                         inflight: b.stats.inflight.load(Ordering::Relaxed),
                         requests: b.stats.requests.load(Ordering::Relaxed),
+                        items: b.stats.items.load(Ordering::Relaxed),
                         errors: b.stats.errors.load(Ordering::Relaxed),
                     })
                     .collect();
@@ -365,6 +374,9 @@ pub struct BackendStatus {
     pub consecutive_failures: u32,
     pub inflight: i64,
     pub requests: u64,
+    /// 舊版 gateway 的回應沒有此欄位。
+    #[serde(default)]
+    pub items: u64,
     pub errors: u64,
 }
 

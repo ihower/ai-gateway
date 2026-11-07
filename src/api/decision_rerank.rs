@@ -131,7 +131,7 @@ async fn judge_all(
                 parse_judgment(&buf.body).map_err(CallError::Invalid)?
             } else {
                 // 判斷相關度沒有副作用，可以像 rerank 一樣在 5xx / 逾時時改送其他後端
-                call_with_retry(svc, first, PATH, body, fwd, false, |buf| parse_judgment(&buf.body)).await?
+                call_with_retry(svc, first, PATH, body, 0, fwd, false, |buf| parse_judgment(&buf.body)).await?
             };
             Ok::<_, GatewayError>((i, judgment))
         }

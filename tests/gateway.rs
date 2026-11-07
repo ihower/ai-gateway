@@ -195,6 +195,11 @@ async fn start_gateway(yaml: impl FnOnce(&std::path::Path) -> String) -> (Gatewa
     (Gateway { url, app, config_path, _dir: dir }, report)
 }
 
+/// 各後端成功處理的筆數（`BackendStats.items`），依設定順序，fallback 在最後。
+fn items(gw: &Gateway, kind: config::ServiceKind) -> Vec<u64> {
+    gw.app.pool.load().service(kind).backends.iter().map(|b| b.stats.items.load(Ordering::Relaxed)).collect()
+}
+
 async fn post_json(url: &str, body: Value) -> (StatusCode, Value) {
     let resp = reqwest::Client::new().post(url).json(&body).send().await.unwrap();
     let status = resp.status();
@@ -222,12 +227,17 @@ async fn embeddings_are_split_and_merged_in_order() {
     assert!(backends.contains(&1.0) && backends.contains(&2.0));
     assert_eq!(body["usage"], json!({"prompt_tokens": 5, "total_tokens": 5}));
     assert_eq!(m1.hits.load(Ordering::Relaxed) + m2.hits.load(Ordering::Relaxed), 2);
+    // requests 各 +1，items 依拆分各記自己那一份
+    let mut split = items(&gw, config::ServiceKind::Embedding);
+    split.sort();
+    assert_eq!(split, vec![2, 3]);
 
     // 單一字串：只打一台
     let (status, body) = post_json(&format!("{}/v1/embeddings", gw.url), json!({"input": "hello"})).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"][0]["embedding"][0], json!(5.0));
     assert_eq!(m1.hits.load(Ordering::Relaxed) + m2.hits.load(Ordering::Relaxed), 3);
+    assert_eq!(items(&gw, config::ServiceKind::Embedding).iter().sum::<u64>(), 6);
 }
 
 #[tokio::test]
@@ -271,6 +281,9 @@ async fn rerank_merges_by_score_with_top_n() {
     assert!(!body["id"].as_str().unwrap().starts_with("mock-"));
     assert_eq!(m1.hits.load(Ordering::Relaxed), 1);
     assert_eq!(m2.hits.load(Ordering::Relaxed), 1);
+    let mut split = items(&gw, config::ServiceKind::Reranker);
+    split.sort();
+    assert_eq!(split, vec![2, 3]);
 }
 
 #[tokio::test]
@@ -313,6 +326,8 @@ async fn failures_retry_elsewhere_and_mark_unhealthy() {
     let m1_hits = m1.hits.load(Ordering::Relaxed);
     assert!(m1_hits <= 3, "backend 1 got {m1_hits} hits");
     assert_eq!(m2.hits.load(Ordering::Relaxed), 4);
+    // 失敗的呼叫不計 items，只記在實際處理成功的後端
+    assert_eq!(items(&gw, config::ServiceKind::Embedding), vec![0, 4]);
 
     // 兩台都壞：502
     m2.mode.store(FAIL, Ordering::Relaxed);
@@ -576,6 +591,8 @@ async fn rerank_chunks_long_documents_and_takes_max() {
     assert_eq!((m1.hits.load(Ordering::Relaxed), m2.hits.load(Ordering::Relaxed)), (1, 1));
     let f = access_line("log-chunks");
     assert_eq!((f["items"].as_u64(), f["chunks"].as_u64()), (Some(4), Some(7)));
+    // 有切段時 items 計的是段數
+    assert_eq!(items(&gw, config::ServiceKind::Reranker).iter().sum::<u64>(), 7);
 
     // 只有一份 document 也會切段、合併
     let (status, out) = post_json(&url, json!({"query": "q", "documents": [MIXED]})).await;
@@ -601,6 +618,8 @@ async fn rerank_chunks_long_documents_and_takes_max() {
     assert_eq!(out["id"], json!("mock-9"));
     assert_eq!(out["results"][0]["relevance_score"], json!(0.16));
     assert_eq!(mf.hits.load(Ordering::Relaxed), 1);
+    // fallback 收原始 request，記原始 document 數
+    assert_eq!(items(&gw, config::ServiceKind::Reranker)[2], 4);
 }
 
 /// 在設定檔末尾（`services` 底下）加上 `decision_reranker` 區塊。
@@ -849,6 +868,7 @@ async fn control_reset_zeroes_stats_and_shutdown_starts_draining() {
     let reply = control::send(&socket, &Command::Reset).await.unwrap();
     assert!(reply.ok);
     assert_eq!(requests(reply.status.as_ref().unwrap()), 0);
+    assert_eq!(reply.status.as_ref().unwrap().services["embedding"][0].items, 0);
     let stats = &gw.app.pool.load().embedding.backends[0].stats;
     assert_eq!(stats.latency_count.load(Ordering::Relaxed), 0);
 

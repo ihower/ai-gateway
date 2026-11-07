@@ -35,7 +35,7 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// 將執行中 gateway 各後端的 requests / errors / 延遲統計歸零
+    /// 將執行中 gateway 各後端的 requests / items / errors / 延遲統計歸零
     Reset,
     /// 通知執行中的 gateway 優雅關閉（等同送 SIGTERM）
     Shutdown,
@@ -197,8 +197,10 @@ async fn status(config_path: &std::path::Path, json: bool) -> ExitCode {
             let state = serde_json::to_value(b.state).unwrap();
             let reason = b.reason.as_deref().map(|r| format!(" ({r})")).unwrap_or_default();
             let role = if b.fallback { " [fallback]" } else { "" };
+            // decision 沒有筆數概念，不顯示 items
+            let items = if service == "decision" { String::new() } else { format!(" items={}", b.items) };
             println!(
-                "{service:<10} {:<width$} {:<10} inflight={} requests={} errors={}{role}{reason}",
+                "{service:<10} {:<width$} {:<10} inflight={} requests={}{items} errors={}{role}{reason}",
                 label(b),
                 state.as_str().unwrap_or(""),
                 b.inflight,

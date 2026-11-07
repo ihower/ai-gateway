@@ -63,7 +63,7 @@ cp config.yaml.example config.yaml
 # 查看目前各後端狀態
 ./ai-gateway status
 
-# 將各後端的 requests / errors / 延遲統計歸零（統計只存在記憶體，重啟也會歸零）
+# 將各後端的 requests / items / errors / 延遲統計歸零（統計只存在記憶體，重啟也會歸零）
 ./ai-gateway reset
 
 # 優雅關閉：停止接受新連線，等進行中的 request 完成後結束（等同送 SIGTERM）

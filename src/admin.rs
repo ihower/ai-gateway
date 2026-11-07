@@ -39,6 +39,7 @@ async fn metrics(State(app): State<Arc<App>>) -> impl IntoResponse {
     let headers = [
         ("ai_gateway_backend_up", "gauge"),
         ("ai_gateway_backend_requests_total", "counter"),
+        ("ai_gateway_backend_items_total", "counter"),
         ("ai_gateway_backend_errors_total", "counter"),
         ("ai_gateway_backend_inflight", "gauge"),
         ("ai_gateway_backend_request_duration_seconds", "histogram"),
@@ -46,6 +47,10 @@ async fn metrics(State(app): State<Arc<App>>) -> impl IntoResponse {
     for (name, kind) in headers {
         let _ = writeln!(out, "# TYPE {name} {kind}");
         for svc in ServiceKind::ALL {
+            // decision 沒有筆數概念
+            if name == "ai_gateway_backend_items_total" && svc == ServiceKind::Decision {
+                continue;
+            }
             for b in &pool.service(svc).backends {
                 let labels = format!("service=\"{svc}\",backend=\"{}\"", b.url);
                 let s = &b.stats;
@@ -55,6 +60,9 @@ async fn metrics(State(app): State<Arc<App>>) -> impl IntoResponse {
                     }
                     "ai_gateway_backend_requests_total" => {
                         let _ = writeln!(out, "{name}{{{labels}}} {}", s.requests.load(Ordering::Relaxed));
+                    }
+                    "ai_gateway_backend_items_total" => {
+                        let _ = writeln!(out, "{name}{{{labels}}} {}", s.items.load(Ordering::Relaxed));
                     }
                     "ai_gateway_backend_errors_total" => {
                         let _ = writeln!(out, "{name}{{{labels}}} {}", s.errors.load(Ordering::Relaxed));

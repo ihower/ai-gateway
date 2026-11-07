@@ -178,7 +178,7 @@ async fn rerank(
     let chunks = plan_chunks(svc, expanded.as_ref().map_or(n, |ex| ex.docs.len()))?;
     // 沒有切段且只需一份時透明轉發；一般後端都不可用時是整包送 fallback，fallback 收原始 request、不切段
     if chunks.len() == 1 && (expanded.is_none() || svc.backends[chunks[0].backend].fallback) {
-        let buf = call_with_retry(svc, chunks[0].backend, path, body, &fwd, true, Ok).await?;
+        let buf = call_with_retry(svc, chunks[0].backend, path, body, n, &fwd, true, Ok).await?;
         return Ok(passthrough(buf));
     }
 
@@ -205,7 +205,7 @@ async fn rerank(
         async move {
             // fallback 可能是不同模型，分數尺度不同，不能與一般後端的分數混排；失敗時整包改送 fallback
             let part =
-                call_with_retry(svc, chunk.backend, path, sub_body, fwd, false, |buf| parse_part(&buf.body, chunk.len)).await?;
+                call_with_retry(svc, chunk.backend, path, sub_body, chunk.len, fwd, false, |buf| parse_part(&buf.body, chunk.len)).await?;
             Ok::<_, GatewayError>((chunk, part))
         }
     });
@@ -215,7 +215,11 @@ async fn rerank(
             let fb = svc.fallback().expect("checked above");
             tracing::warn!(service = %svc.kind, retry_to = %svc.backends[fb].url, reason = %e.reason(), "falling back with whole request");
             return match call_once(svc, fb, path, body, &fwd).await {
-                Ok(buf) => Ok(passthrough(buf)),
+                Ok(buf) => {
+                    // fallback 收原始 request、不切段
+                    svc.backends[fb].record_items(n);
+                    Ok(passthrough(buf))
+                }
                 Err(e) => Err(e.into()),
             };
         }

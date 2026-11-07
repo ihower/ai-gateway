@@ -234,12 +234,14 @@ pub async fn call_once(svc: &ServicePool, idx: usize, path: &str, body: Bytes, f
 
 /// 送出並在後端失敗時改送其他後端，最多 `max_retries` 次（embedding / rerank 為冪等運算）；
 /// `use_fallback` 時，一般後端都失敗後若有 fallback 再送一次（不計入 `max_retries`）。
-/// `parse` 檢查 2xx 回應；檢查失敗視同後端失敗。
+/// `parse` 檢查 2xx 回應；檢查失敗視同後端失敗。成功時把 `items` 記到實際處理的後端。
+#[allow(clippy::too_many_arguments)]
 pub async fn call_with_retry<T>(
     svc: &ServicePool,
     first: usize,
     path: &str,
     body: Bytes,
+    items: usize,
     fwd: &Forward,
     use_fallback: bool,
     parse: impl Fn(Buffered) -> Result<T, String>,
@@ -249,7 +251,10 @@ pub async fn call_with_retry<T>(
     loop {
         let err = match call_once(svc, idx, path, body.clone(), fwd).await {
             Ok(buf) => match parse(buf) {
-                Ok(v) => return Ok(v),
+                Ok(v) => {
+                    svc.backends[idx].record_items(items);
+                    return Ok(v);
+                }
                 Err(e) => {
                     let err = CallError::Invalid(e);
                     svc.backends[idx].record_failure(&svc.tuning, &err.reason());
