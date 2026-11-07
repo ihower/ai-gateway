@@ -43,7 +43,7 @@ uv sync
 ./serve_vllm.sh --gpu 1
 ```
 
-沒指定時用 HIP 看到的第 0 張。`GPU_MEMORY_UTILIZATION` 未設定時會依所選 GPU 的總記憶體自動計算，讓 vLLM 用約 `GPU_MEMORY_TARGET_GIB`（預設 8）GiB，上限 0.9。
+沒指定時用 HIP 看到的第 0 張。KV cache 由 `KV_CACHE_MEMORY_BYTES`（預設 `1G`，約 21k tokens）直接指定，所以 `GPU_MEMORY_UTILIZATION` 只用在 vLLM 啟動時檢查剩餘記憶體。這個值未設定時會依所選 GPU 的總記憶體自動計算，門檻約 `GPU_MEMORY_TARGET_GIB`（預設 3）GiB，上限 0.9。跟 reranker 共用 16 GiB 的 9070 XT 時也能通過檢查。
 
 API 用法請看 [NVIDIA 版 README](../voyage-4-nano-cuda/README.md#api)，把 port 換成 12353 即可。
 
@@ -63,7 +63,7 @@ uv run python test_client.py     # 對正在跑的 server 做 HTTP smoke test（
 - **`PYTHONPATH` 要加上 `_rocm_sdk_core/share/amd_smi`**，並設定 `FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE`：這是 AMD 文件要求的，否則 vLLM 偵測不到 ROCm 平台。
 - **目前保留 `--enforce-eager`**：vLLM 0.19.1 有 torch.compile 的 `IndexError: list index out of range`。0.29 的 offline 測試在兩張 GPU 上都已經可以 compile，但 HTTP server 還沒在 compile 模式驗證過。
 - **會 `unset CUDA_VISIBLE_DEVICES`**：HIP 也會讀這個變數，若外面為了 NVIDIA 設了 `CUDA_VISIBLE_DEVICES=1`，會找不到 AMD GPU。
-- **8060S 是統一記憶體**：GPU 記憶體就是系統 RAM（GPU 可用約 112 GiB），vLLM 預留的部分會實際佔用系統記憶體。模型權重本身只有約 0.7 GiB，RAM 吃緊時可以調低 `GPU_MEMORY_TARGET_GIB`。
+- **8060S 是統一記憶體**：GPU 記憶體就是系統 RAM（GPU 可用約 112 GiB），vLLM 預留的部分會實際佔用系統記憶體。模型權重本身只有約 0.7 GiB，預設只佔用約 3 GiB。
 
 ## 驗證結果
 

@@ -49,12 +49,16 @@ for i in range(torch.cuda.device_count()):
 '
 fi
 
-# --gpu-memory-utilization：未指定時依所選 GPU 的總記憶體自動計算
+# 直接指定 KV cache 大小（每 token 48KiB：12 層 × 8 KV heads × 128 dim × K/V × bf16）。
+# 1G（大寫 G = GiB）約 21k tokens，可容納 2 個以上 8192 tokens 的完整序列
+KV_CACHE_MEMORY_BYTES="${KV_CACHE_MEMORY_BYTES:-1G}"
+# 設定 KV_CACHE_MEMORY_BYTES 後此比例不影響分配，只用於 vLLM 啟動時檢查剩餘記憶體
+# （剩餘記憶體需 >= 比例 × 總記憶體）。未指定時依所選 GPU 的總記憶體自動計算：
 # GPU_MEMORY_UTILIZATION = GPU_MEMORY_TARGET_GIB / 總記憶體（上限 0.9）。
-# 模型權重只有約 0.7 GiB，其餘給 KV cache。預設 8 GiB：
-# 8060S（統一記憶體約 112 GiB，會實際佔用系統 RAM）約 0.071，9070 XT（16 GiB）約 0.5
+# 預設 3 GiB 足夠權重約 0.7 GiB + KV 1 GiB + 運算空間。8060S（統一記憶體約 112 GiB）約 0.027，
+# 9070 XT（16 GiB）約 0.188，和 reranker 同卡時也能通過檢查
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-}"
-GPU_MEMORY_TARGET_GIB="${GPU_MEMORY_TARGET_GIB:-8}"
+GPU_MEMORY_TARGET_GIB="${GPU_MEMORY_TARGET_GIB:-3}"
 
 # 偵測要用的 GPU（可見裝置中的第 0 張，vLLM 也會用這張），顯示型號並決定 GPU_MEMORY_UTILIZATION
 GPU_INFO="$(uv run python -c '
@@ -69,7 +73,7 @@ if [[ -z "$GPU_MEMORY_UTILIZATION" ]]; then
   GPU_MEMORY_UTILIZATION="$(awk -v t="$GPU_MEMORY_TARGET_GIB" -v m="$GPU_TOTAL_BYTES" \
     'BEGIN { u = t * 1073741824 / m; if (u > 0.9) u = 0.9; printf "%.3f", u }')"
 fi
-echo "使用 GPU：$GPU_NAME（$GPU_ARCH，$(awk -v m="$GPU_TOTAL_BYTES" 'BEGIN { printf "%.1f", m / 1073741824 }') GiB，HIP_VISIBLE_DEVICES=${HIP_VISIBLE_DEVICES:-未設定}），GPU_MEMORY_UTILIZATION=$GPU_MEMORY_UTILIZATION" >&2
+echo "使用 GPU：$GPU_NAME（$GPU_ARCH，$(awk -v m="$GPU_TOTAL_BYTES" 'BEGIN { printf "%.1f", m / 1073741824 }') GiB，HIP_VISIBLE_DEVICES=${HIP_VISIBLE_DEVICES:-未設定}），GPU_MEMORY_UTILIZATION=$GPU_MEMORY_UTILIZATION，KV_CACHE_MEMORY_BYTES=$KV_CACHE_MEMORY_BYTES" >&2
 
 # ps 顯示的 process 名稱前綴，例如 voyage-4-nano-rocm::EngineCore
 export VLLM_PROCESS_NAME_PREFIX="${VLLM_PROCESS_NAME_PREFIX:-voyage-4-nano-rocm}"
@@ -85,6 +89,7 @@ exec uv run vllm serve voyageai/voyage-4-nano \
   --trust-remote-code --dtype bfloat16 --enforce-eager \
   --max-model-len "${MAX_MODEL_LEN:-8192}" \
   --gpu-memory-utilization "$GPU_MEMORY_UTILIZATION" \
+  --kv-cache-memory-bytes "$KV_CACHE_MEMORY_BYTES" \
   --api-server-count "${API_SERVER_COUNT:-1}" \
   --middleware prompt_middleware.VoyagePromptMiddleware \
   --host "${HOST:-0.0.0.0}" --port "${PORT:-12353}" \
