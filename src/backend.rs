@@ -67,6 +67,8 @@ impl Drop for InflightGuard {
 pub struct Backend {
     pub service: ServiceKind,
     pub url: String,
+    /// 顯示用名稱；設定未填時等於 url。
+    pub name: String,
     pub weight: u32,
     /// 啟動 / reload 時探測失敗的原因；`Some` 表示停用，直到下次 reload。
     pub disabled: Option<String>,
@@ -91,6 +93,7 @@ impl Backend {
     pub fn new(service: ServiceKind, url: String, weight: u32, disabled: Option<String>, stats: Arc<BackendStats>) -> Self {
         Backend {
             service,
+            name: url.clone(),
             url,
             weight,
             disabled,
@@ -100,6 +103,13 @@ impl Backend {
             unhealthy_until_ms: AtomicU64::new(0),
             stats,
         }
+    }
+
+    pub fn with_name(mut self, name: Option<&str>) -> Self {
+        if let Some(n) = name {
+            self.name = n.to_string();
+        }
+        self
     }
 
     pub fn into_fallback(mut self, request_timeout_ms: Option<u64>) -> Self {
@@ -304,6 +314,7 @@ impl Pool {
                     .backends
                     .iter()
                     .map(|b| BackendStatus {
+                        name: b.name.clone(),
                         url: b.url.clone(),
                         fallback: b.fallback,
                         weight: b.weight,
@@ -341,6 +352,9 @@ pub struct PoolStatus {
 
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct BackendStatus {
+    /// 舊版 gateway 的回應沒有此欄位，CLI 讀取時預設為空字串並改顯示 url。
+    #[serde(default)]
+    pub name: String,
     pub url: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub fallback: bool,
@@ -368,7 +382,7 @@ mod tests {
         let cfg = ServiceConfig {
             tuning: Tuning::default(),
             probe_model: None,
-            backends: weights.iter().enumerate().map(|(i, w)| BackendConfig { url: format!("http://b{i}"), weight: *w }).collect(),
+            backends: weights.iter().enumerate().map(|(i, w)| BackendConfig { url: format!("http://b{i}"), name: None, weight: *w }).collect(),
             fallback: None,
             chunking: None,
         };

@@ -108,9 +108,9 @@ pub async fn build_pool(config: Config, version: u64, prev: Option<&Pool>) -> (P
             let stats = prev_stats.get(&(kind, url.to_string())).cloned().unwrap_or_default();
             Backend::new(kind, url.to_string(), weight, failure, stats)
         };
-        let mut backends: Vec<Arc<Backend>> = svc.backends.iter().map(|b| Arc::new(make(&b.url, b.weight))).collect();
+        let mut backends: Vec<Arc<Backend>> = svc.backends.iter().map(|b| Arc::new(make(&b.url, b.weight).with_name(b.name.as_deref()))).collect();
         if let Some(f) = &svc.fallback {
-            backends.push(Arc::new(make(&f.url, 1).into_fallback(f.request_timeout_ms)));
+            backends.push(Arc::new(make(&f.url, 1).with_name(f.name.as_deref()).into_fallback(f.request_timeout_ms)));
         }
         if backends.iter().all(|b| b.disabled.is_some()) {
             tracing::error!(service = %kind, "all backends disabled; requests will get 503");

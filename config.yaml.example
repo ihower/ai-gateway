@@ -25,10 +25,14 @@ services:
   embedding:
     backends:
       - url: "http://gpu-1.example.com:12351"
+        name: "gpu-1"                # 選填：status 與 /admin/backends 顯示用的名稱，未填則用 url
       - url: "http://gpu-2.example.com:12352"
+        name: "gpu-2"
       - url: "http://gpu-3.example.com:12353"
+        name: "gpu-3"
     fallback:                        # 所有一般後端都失效時才使用：CPU 跑的 voyage-4-nano（fallback-fastapi/server.py）
       url: "http://127.0.0.1:12359"
+      name: "fallback-fastapi"
       request_timeout_ms: 120000     # CPU 推論較慢
 
   reranker:
@@ -37,23 +41,30 @@ services:
       overlap_chars: 200
     backends:
       - url: "http://gpu-1.example.com:12361"
+        name: "gpu-1"
         weight: 1
       - url: "http://gpu-2.example.com:12362"
+        name: "gpu-2"
         weight: 1
       - url: "http://gpu-3.example.com:12363"
+        name: "gpu-3"
         weight: 1
     fallback:                        # 所有一般後端都失效時才使用：Cohere rerank-v4.0-fast（經 fallback-fastapi/server.py 轉送）
       url: "http://127.0.0.1:12359"
+      name: "fallback-fastapi"
       request_timeout_ms: 60000
 
   decision:
     backends:
       - url: "http://gpu-1.example.com:12371"
+        name: "gpu-1"
         weight: 1
       - url: "http://gpu-2.example.com:12372"
+        name: "gpu-2"
         weight: 1
     fallback:                        # 所有一般後端都失效時才使用：Jev jev-1.14.0（經 fallback-fastapi/server.py 轉送）
       url: "http://127.0.0.1:12359"
+      name: "fallback-fastapi"
       request_timeout_ms: 60000
 
   decision_reranker:                 # POST /decision/v2/rerank：Cohere v2 rerank，每份 document 問 decision 一個是非題

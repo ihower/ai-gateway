@@ -187,14 +187,19 @@ async fn status(config_path: &std::path::Path, json: bool) -> ExitCode {
         return ExitCode::SUCCESS;
     }
     println!("config v{} from {} (loaded at unix {})", status.version, status.config_path, status.loaded_at_unix);
+    // 有設定 name 時顯示「name (url)」，否則只顯示 url
+    let label = |b: &ai_gateway::backend::BackendStatus| {
+        if b.name.is_empty() || b.name == b.url { b.url.clone() } else { format!("{} ({})", b.name, b.url) }
+    };
+    let width = status.services.values().flatten().map(|b| label(b).chars().count()).max().unwrap_or(0).max(32);
     for (service, backends) in &status.services {
         for b in backends {
             let state = serde_json::to_value(b.state).unwrap();
             let reason = b.reason.as_deref().map(|r| format!(" ({r})")).unwrap_or_default();
             let role = if b.fallback { " [fallback]" } else { "" };
             println!(
-                "{service:<10} {:<32} {:<10} inflight={} requests={} errors={}{role}{reason}",
-                b.url,
+                "{service:<10} {:<width$} {:<10} inflight={} requests={} errors={}{role}{reason}",
+                label(b),
                 state.as_str().unwrap_or(""),
                 b.inflight,
                 b.requests,

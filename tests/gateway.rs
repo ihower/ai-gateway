@@ -842,6 +842,9 @@ async fn control_reset_zeroes_stats_and_shutdown_starts_draining() {
     let requests = |s: &ai_gateway::backend::PoolStatus| s.services["embedding"][0].requests;
     let reply = control::send(&socket, &Command::Status).await.unwrap();
     assert!(requests(reply.status.as_ref().unwrap()) > 0);
+    // 未設定 name 時預設為 url
+    let b = &reply.status.as_ref().unwrap().services["embedding"][0];
+    assert_eq!(b.name, b.url);
 
     let reply = control::send(&socket, &Command::Reset).await.unwrap();
     assert!(reply.ok);
@@ -859,4 +862,21 @@ async fn control_reset_zeroes_stats_and_shutdown_starts_draining() {
     assert!(gw.app.draining.load(Ordering::Relaxed));
     let resp = reqwest::get(format!("{}/healthz", gw.url)).await.unwrap();
     assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn backend_name_appears_in_status() {
+    let (u1, _m1) = spawn_mock(1).await;
+    let (u2, _m2) = spawn_mock(2).await;
+    let (gw, _) = start_gateway(|d| {
+        config_yaml(d, &[&u1, &u2], &[&u1], &[&u1]).replacen(&format!("- url: \"{u1}\""), &format!("- url: \"{u1}\"\n        name: gpu-1"), 1)
+    })
+    .await;
+    let status = gw.app.pool.load().status();
+    let emb = &status.services["embedding"];
+    assert_eq!((emb[0].name.as_str(), emb[0].url.as_str()), ("gpu-1", u1.as_str()));
+    assert_eq!(emb[1].name, u2);
+    // /admin/backends 與 status 共用同一份資料，序列化後帶有 name
+    let v = serde_json::to_value(&status).unwrap();
+    assert_eq!(v["services"]["embedding"][0]["name"], json!("gpu-1"));
 }

@@ -88,6 +88,7 @@ services:
 ```
 
 - 每個 backend 可選填 `weight`（預設 1），用於拆分比例與輪流權重。
+- 每個 backend 與 fallback 可選填 `name`，只用於顯示：`ai-gateway status` 顯示為 `name (url)`，`/admin/backends` 與 `status --json` 多一個 `name` 欄位；未填時等於 url。前後空白會去除，不可為空字串，同一 service 內不可重複。統計仍以 url 識別，改 name 後 reload 不會讓計數歸零。
 - 每個 service 可覆寫 `defaults` 的任一欄位（例如 reranker 的 `request_timeout_ms` 較長）。
 - 啟動時驗證：URL 格式正確且為 `http://`（未編入 TLS，不支援 `https://` 後端）、每個 service 至少一個 backend；驗證失敗則拒絕啟動（reload 時則保留舊設定，見 §7）。
 - 「後端連不上」**不算**設定錯誤：該後端會被停用（`disabled`），不影響啟動或 reload（見 §8.2）。
@@ -111,7 +112,7 @@ services:
 
 | Method | Path | 說明 |
 |--------|------|------|
-| GET  | `/admin/backends` | 列出各後端狀態：`enabled` / `disabled` / `unhealthy`、停用原因、in-flight 數、累計請求/錯誤數 |
+| GET  | `/admin/backends` | 列出各後端狀態（含 `name`）：`enabled` / `disabled` / `unhealthy`、停用原因、in-flight 數、累計請求/錯誤數 |
 | GET  | `/admin/config` | 回傳目前生效的設定與載入時間、設定版本號 |
 
 管理端點只供查詢；**重新載入一律透過 CLI**（§3.3）。

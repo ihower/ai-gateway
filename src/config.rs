@@ -126,14 +126,26 @@ impl ServiceConfig {
 #[serde(deny_unknown_fields)]
 pub struct BackendConfig {
     pub url: String,
+    /// 顯示用名稱（status、`/admin/backends`）；未填則用 url。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     #[serde(default = "default_weight")]
     pub weight: u32,
+}
+
+impl BackendConfig {
+    pub fn display_name(&self) -> &str {
+        self.name.as_deref().unwrap_or(&self.url)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FallbackConfig {
     pub url: String,
+    /// 顯示用名稱；未填則用 url。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     /// 覆寫 service 的 `request_timeout_ms`；CPU 推論較慢，通常要設得較長。
     #[serde(default)]
     pub request_timeout_ms: Option<u64>,
@@ -321,7 +333,8 @@ impl RawService {
             if backends.iter().any(|x: &BackendConfig| x.url == url) {
                 bail!("services.{kind}.backends: duplicate url {url}");
             }
-            backends.push(BackendConfig { url, weight: b.weight });
+            let name = check_name(kind, b.name, &url, &backends)?;
+            backends.push(BackendConfig { url, name, weight: b.weight });
         }
         let fallback = match self.fallback {
             Some(f) => {
@@ -329,7 +342,8 @@ impl RawService {
                 if backends.iter().any(|b| b.url == url) {
                     bail!("services.{kind}.fallback: {url} is also listed in backends");
                 }
-                Some(FallbackConfig { url, request_timeout_ms: f.request_timeout_ms })
+                let name = check_name(kind, f.name, &url, &backends)?;
+                Some(FallbackConfig { url, name, request_timeout_ms: f.request_timeout_ms })
             }
             None => None,
         };
@@ -341,6 +355,20 @@ impl RawService {
         }
         Ok(ServiceConfig { tuning, probe_model: self.probe_model, backends, fallback, chunking: self.chunking })
     }
+}
+
+/// 驗證選填的 `name`：去除前後空白、不可為空字串，同一 service 內不可與其他後端的顯示名稱重複。
+fn check_name(kind: ServiceKind, name: Option<String>, url: &str, others: &[BackendConfig]) -> anyhow::Result<Option<String>> {
+    let name = match name {
+        Some(n) if n.trim().is_empty() => bail!("services.{kind}: name of {url} must not be empty"),
+        Some(n) => Some(n.trim().to_string()),
+        None => None,
+    };
+    let display = name.as_deref().unwrap_or(url);
+    if others.iter().any(|b| b.display_name() == display) {
+        bail!("services.{kind}: duplicate backend name {display:?}");
+    }
+    Ok(name)
 }
 
 fn normalize_url(raw: &str) -> anyhow::Result<String> {
@@ -505,5 +533,29 @@ services:
         assert!(parse(&with("reranker", "{max_chars: 5, overlap_chars: 6}"), Path::new("c.yaml")).is_err());
         let err = parse(&with("embedding", "{max_chars: 5}"), Path::new("c.yaml")).unwrap_err();
         assert!(err.to_string().contains("only supported for reranker"), "{err}");
+    }
+
+    #[test]
+    fn backend_name_is_optional_trimmed_and_unique() {
+        let named = SAMPLE.replace(
+            "      - url: \"http://10.0.0.1:1/\"\n",
+            "      - url: \"http://10.0.0.1:1/\"\n        name: \" gpu-1 \"\n",
+        );
+        let c = parse(&named, Path::new("c.yaml")).unwrap();
+        assert_eq!(c.embedding.backends[0].name.as_deref(), Some("gpu-1"));
+        assert_eq!(c.embedding.backends[1].name, None);
+        assert_eq!(c.embedding.backends[1].display_name(), "http://10.0.0.2:1");
+
+        let empty = SAMPLE.replace("      - url: \"http://10.0.0.1:1/\"\n", "      - url: \"http://10.0.0.1:1/\"\n        name: \"  \"\n");
+        assert!(format!("{:#}", parse(&empty, Path::new("c.yaml")).unwrap_err()).contains("must not be empty"));
+
+        let dup = SAMPLE
+            .replace("      - url: \"http://10.0.0.1:1/\"\n", "      - url: \"http://10.0.0.1:1/\"\n        name: gpu\n")
+            .replace("        weight: 3\n", "        weight: 3\n        name: gpu\n");
+        assert!(format!("{:#}", parse(&dup, Path::new("c.yaml")).unwrap_err()).contains("duplicate backend name"));
+
+        let fb = named.replace("        weight: 3\n", "        weight: 3\n    fallback:\n      url: \"http://127.0.0.1:9\"\n      name: cpu\n");
+        let c = parse(&fb, Path::new("c.yaml")).unwrap();
+        assert_eq!(c.embedding.fallback.unwrap().name.as_deref(), Some("cpu"));
     }
 }
