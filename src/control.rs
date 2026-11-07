@@ -18,6 +18,8 @@ use crate::server::App;
 pub enum Command {
     Reload,
     Status,
+    Reset,
+    Shutdown,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -72,6 +74,17 @@ async fn handle(stream: UnixStream, app: Arc<App>) -> anyhow::Result<()> {
             }
         },
         Ok(Command::Status) => Reply { ok: true, status: Some(app.pool.load().status()), ..Default::default() },
+        Ok(Command::Reset) => {
+            let pool = app.pool.load();
+            pool.reset_stats();
+            tracing::info!(version = pool.version, "backend stats reset");
+            Reply { ok: true, status: Some(pool.status()), ..Default::default() }
+        }
+        Ok(Command::Shutdown) => {
+            tracing::info!("shutdown requested via control socket");
+            app.begin_shutdown();
+            Reply { ok: true, ..Default::default() }
+        }
         Err(e) => Reply { ok: false, error: Some(format!("invalid command: {e}")), ..Default::default() },
     };
     let mut out = serde_json::to_vec(&reply)?;

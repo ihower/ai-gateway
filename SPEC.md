@@ -126,9 +126,11 @@ services:
 | `ai-gateway reload [--json]` | 通知執行中的 gateway 重新載入設定，等待完成後印出後端差異與被停用的後端（§7.1） |
 | `ai-gateway check [--config <path>]` | 只驗證設定檔並探測所有後端，印出結果，**不影響**執行中的 gateway；適合在 reload 前先檢查 |
 | `ai-gateway status [--json]` | 印出執行中 gateway 的設定版本與各後端狀態 |
+| `ai-gateway reset` | 將執行中 gateway 各後端的累計 requests / errors / 延遲統計歸零（`inflight` 與健康狀態不變） |
+| `ai-gateway shutdown` | 通知執行中的 gateway 優雅關閉，流程同 `SIGTERM`（§7.2）；送出後立即返回，不等 process 結束 |
 
-- `reload` / `status` 透過 `server.control_socket` 與 gateway 溝通，不經過網路埠。
-- 未指定 `--config` 時，`reload` / `status` 讀取 `--config` / `AI_GATEWAY_CONFIG` / `./config.yaml` 中的 `control_socket` 來找到 gateway。
+- `reload` / `status` / `reset` / `shutdown` 透過 `server.control_socket` 與 gateway 溝通，不經過網路埠。
+- 未指定 `--config` 時，這些指令讀取 `--config` / `AI_GATEWAY_CONFIG` / `./config.yaml` 中的 `control_socket` 來找到 gateway。
 - Exit code：`0` 成功；`1` 設定錯誤或 reload 失敗（舊設定保留）；`2` 連不到執行中的 gateway。
 - 有後端被停用時 reload 仍算成功（exit `0`），但會在輸出中標出。
 
@@ -385,7 +387,7 @@ decision   (no change)
 
 新 process 啟動時同樣先探測所有後端（§8.2），連不上的後端一開始就是 `disabled`。
 
-收到 `SIGTERM` / `SIGINT`：
+收到 `SIGTERM` / `SIGINT`，或執行 `ai-gateway shutdown`：
 
 1. 進入 draining：`/healthz`、`/readyz` 回 `503`，讓上游 LB 停止送流量
 2. 停止接受新連線（axum `with_graceful_shutdown`）

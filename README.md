@@ -62,11 +62,17 @@ cp config.yaml.example config.yaml
 
 # 查看目前各後端狀態
 ./ai-gateway status
+
+# 將各後端的 requests / errors / 延遲統計歸零（統計只存在記憶體，重啟也會歸零）
+./ai-gateway reset
+
+# 優雅關閉：停止接受新連線，等進行中的 request 完成後結束（等同送 SIGTERM）
+./ai-gateway shutdown
 ```
 
-`reload` / `status` 的 exit code：`0` 成功；`1` 設定錯誤或 reload 失敗（舊設定保留）；`2` 連不到執行中的 gateway。
+`reload` / `status` / `reset` / `shutdown` 的 exit code：`0` 成功；`1` 設定錯誤或 reload 失敗（舊設定保留）；`2` 連不到執行中的 gateway。
 
-升級 binary 或修改監聽位址時，送 `SIGTERM`：gateway 停止接受新連線，等進行中的 request 完成（最多 `shutdown_timeout_secs`）後結束。
+升級 binary 或修改監聽位址時，執行 `./ai-gateway shutdown` 或送 `SIGTERM`：gateway 停止接受新連線，等進行中的 request 完成（最多 `shutdown_timeout_secs`）後結束。
 
 ## Fallback
 

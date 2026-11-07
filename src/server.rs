@@ -31,6 +31,7 @@ pub struct App {
     /// 啟動時的 server 設定；監聽位址等無法熱重載。
     pub boot_server: ServerConfig,
     reload_lock: Mutex<()>,
+    shutdown: watch::Sender<bool>,
 }
 
 impl App {
@@ -42,7 +43,14 @@ impl App {
             config_path,
             boot_server,
             reload_lock: Mutex::new(()),
+            shutdown: watch::channel(false).0,
         }
+    }
+
+    /// 進入 draining 並通知所有 listener 優雅關閉（SIGTERM / SIGINT 與 `ai-gateway shutdown` 共用）。
+    pub fn begin_shutdown(&self) {
+        self.draining.store(true, Ordering::Relaxed);
+        self.shutdown.send_replace(true);
     }
 
     /// 重新載入設定並原子替換後端池。進行中的 request 持有舊池的 `Arc`，會用舊池完成。
@@ -170,13 +178,13 @@ pub async fn serve(config_path: PathBuf) -> anyhow::Result<()> {
     };
     tracing::info!(listen = %server.listen, admin = ?server.admin_listen, control = %server.control_socket.display(), "ai-gateway started");
 
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let shutdown_rx = app.shutdown.subscribe();
     let wait_shutdown = |mut rx: watch::Receiver<bool>| async move {
         let _ = rx.wait_for(|v| *v).await;
     };
 
     tokio::spawn(control::serve(control, app.clone()));
-    tokio::spawn(handle_signals(app.clone(), shutdown_tx));
+    tokio::spawn(handle_signals(app.clone()));
     if let Some(l) = admin_listener {
         let admin = axum::serve(l, admin::router(app.clone())).with_graceful_shutdown(wait_shutdown(shutdown_rx.clone()));
         tokio::spawn(async move { admin.await });
@@ -206,7 +214,7 @@ pub async fn serve(config_path: PathBuf) -> anyhow::Result<()> {
 }
 
 /// SIGHUP：熱重載；SIGTERM / SIGINT：進入 draining 並優雅關閉。
-async fn handle_signals(app: Arc<App>, shutdown: watch::Sender<bool>) {
+async fn handle_signals(app: Arc<App>) {
     let mut hup = signal(SignalKind::hangup()).expect("install SIGHUP handler");
     let mut term = signal(SignalKind::terminate()).expect("install SIGTERM handler");
     let mut int = signal(SignalKind::interrupt()).expect("install SIGINT handler");
@@ -224,6 +232,5 @@ async fn handle_signals(app: Arc<App>, shutdown: watch::Sender<bool>) {
             _ = int.recv() => break,
         }
     }
-    app.draining.store(true, Ordering::Relaxed);
-    let _ = shutdown.send(true);
+    app.begin_shutdown();
 }

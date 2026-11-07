@@ -35,6 +35,10 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// 將執行中 gateway 各後端的 requests / errors / 延遲統計歸零
+    Reset,
+    /// 通知執行中的 gateway 優雅關閉（等同送 SIGTERM）
+    Shutdown,
 }
 
 #[tokio::main]
@@ -59,6 +63,10 @@ async fn main() -> ExitCode {
         Cmd::Reload { json } => reload(&cli.config, json).await,
         Cmd::Check { json } => check(&cli.config, json).await,
         Cmd::Status { json } => status(&cli.config, json).await,
+        Cmd::Reset => simple_command(&cli.config, Command::Reset, "stats reset to 0").await,
+        Cmd::Shutdown => {
+            simple_command(&cli.config, Command::Shutdown, "shutdown requested; gateway is draining in-flight requests").await
+        }
     }
 }
 
@@ -148,6 +156,21 @@ async fn check(config_path: &std::path::Path, json: bool) -> ExitCode {
         }
     }
     ExitCode::SUCCESS
+}
+
+/// 送出不需額外輸出的命令，成功時印出 `done`。
+async fn simple_command(config_path: &std::path::Path, cmd: Command, done: &str) -> ExitCode {
+    match control_send(config_path, cmd).await {
+        Ok(reply) if reply.ok => {
+            println!("{done}");
+            ExitCode::SUCCESS
+        }
+        Ok(reply) => {
+            eprintln!("error: {}", reply.error.unwrap_or_default());
+            ExitCode::from(1)
+        }
+        Err(code) => code,
+    }
 }
 
 async fn status(config_path: &std::path::Path, json: bool) -> ExitCode {

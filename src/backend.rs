@@ -30,6 +30,17 @@ pub struct BackendStats {
 }
 
 impl BackendStats {
+    /// 累計數字歸零（`ai-gateway reset`）。`inflight` 是即時數量，不歸零，否則進行中的 request 結束時會變成負數。
+    pub fn reset(&self) {
+        self.requests.store(0, Ordering::Relaxed);
+        self.errors.store(0, Ordering::Relaxed);
+        for b in &self.latency_buckets {
+            b.store(0, Ordering::Relaxed);
+        }
+        self.latency_sum_micros.store(0, Ordering::Relaxed);
+        self.latency_count.store(0, Ordering::Relaxed);
+    }
+
     fn observe(&self, elapsed: Duration) {
         let secs = elapsed.as_secs_f64();
         if let Some(i) = LATENCY_BUCKETS.iter().position(|b| secs <= *b) {
@@ -273,6 +284,15 @@ impl Pool {
             .iter()
             .flat_map(|k| self.service(*k).backends.iter().map(move |b| ((*k, b.url.clone()), b.stats.clone())))
             .collect()
+    }
+
+    /// 將所有後端（含 fallback）的累計統計歸零。
+    pub fn reset_stats(&self) {
+        for k in ServiceKind::ALL {
+            for b in &self.service(k).backends {
+                b.stats.reset();
+            }
+        }
     }
 
     pub fn status(&self) -> PoolStatus {

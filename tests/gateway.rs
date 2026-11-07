@@ -827,3 +827,36 @@ async fn access_log_records_each_request_with_backends() {
     let text = String::from_utf8(logs().0.lock().unwrap().clone()).unwrap();
     assert!(!text.contains("log-health"));
 }
+
+#[tokio::test]
+async fn control_reset_zeroes_stats_and_shutdown_starts_draining() {
+    use ai_gateway::control::{self, Command};
+
+    let (u1, _m1) = spawn_mock(1).await;
+    let (gw, _) = start_gateway(|d| config_yaml(d, &[&u1], &[&u1], &[&u1])).await;
+    let socket = gw._dir.path().join("control.sock");
+    tokio::spawn(control::serve(control::bind(&socket).unwrap(), gw.app.clone()));
+
+    let (status, _) = post_json(&format!("{}/v1/embeddings", gw.url), json!({"input": "x"})).await;
+    assert_eq!(status, StatusCode::OK);
+    let requests = |s: &ai_gateway::backend::PoolStatus| s.services["embedding"][0].requests;
+    let reply = control::send(&socket, &Command::Status).await.unwrap();
+    assert!(requests(reply.status.as_ref().unwrap()) > 0);
+
+    let reply = control::send(&socket, &Command::Reset).await.unwrap();
+    assert!(reply.ok);
+    assert_eq!(requests(reply.status.as_ref().unwrap()), 0);
+    let stats = &gw.app.pool.load().embedding.backends[0].stats;
+    assert_eq!(stats.latency_count.load(Ordering::Relaxed), 0);
+
+    // 歸零後繼續累計
+    post_json(&format!("{}/v1/embeddings", gw.url), json!({"input": "x"})).await;
+    let reply = control::send(&socket, &Command::Status).await.unwrap();
+    assert_eq!(requests(reply.status.as_ref().unwrap()), 1);
+
+    let reply = control::send(&socket, &Command::Shutdown).await.unwrap();
+    assert!(reply.ok);
+    assert!(gw.app.draining.load(Ordering::Relaxed));
+    let resp = reqwest::get(format!("{}/healthz", gw.url)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
