@@ -1,7 +1,7 @@
 //! 後端池：後端狀態、加權輪流挑選與拆分比例（SPEC §4.2、§8.1、§8.2）。
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -54,6 +54,9 @@ impl BackendStats {
     }
 }
 
+/// 手動停用時 `status` 顯示的原因。
+pub const MANUAL_REASON: &str = "disabled manually";
+
 /// 一次對後端的呼叫期間持有；drop 時更新 in-flight 數與延遲。
 pub struct InflightGuard {
     stats: Arc<BackendStats>,
@@ -75,6 +78,8 @@ pub struct Backend {
     pub weight: u32,
     /// 啟動 / reload 時探測失敗的原因；`Some` 表示停用，直到下次 reload。
     pub disabled: Option<String>,
+    /// 以 `ai-gateway disable` 手動停用，直到下次 reload 重新探測。
+    manually_disabled: AtomicBool,
     /// 只在所有一般後端都失效時使用（SPEC §8.6）。
     pub fallback: bool,
     /// 覆寫 service 的 `request_timeout_ms`。
@@ -100,6 +105,7 @@ impl Backend {
             url,
             weight,
             disabled,
+            manually_disabled: AtomicBool::new(false),
             fallback: false,
             request_timeout_ms: None,
             consecutive_failures: AtomicU32::new(0),
@@ -121,8 +127,27 @@ impl Backend {
         self
     }
 
+    pub fn is_manually_disabled(&self) -> bool {
+        self.manually_disabled.load(Ordering::Relaxed)
+    }
+
+    /// 手動停用，回傳是否有變更（原本未手動停用）。進行中的 request 不受影響，只影響之後的挑選。
+    pub fn disable_manually(&self) -> bool {
+        !self.manually_disabled.swap(true, Ordering::Relaxed)
+    }
+
+    /// 探測失敗或手動停用。
+    pub fn is_disabled(&self) -> bool {
+        self.disabled.is_some() || self.is_manually_disabled()
+    }
+
+    /// 停用原因：探測失敗優先，其次為手動停用。
+    pub fn disabled_reason(&self) -> Option<String> {
+        self.disabled.clone().or_else(|| self.is_manually_disabled().then(|| MANUAL_REASON.to_string()))
+    }
+
     pub fn state(&self) -> BackendState {
-        if self.disabled.is_some() {
+        if self.is_disabled() {
             BackendState::Disabled
         } else if self.unhealthy_until_ms.load(Ordering::Relaxed) > now_ms() {
             BackendState::Unhealthy
@@ -206,7 +231,7 @@ impl ServicePool {
     /// 否則退回所有啟用中的後端（SPEC §8.1）。
     pub fn eligible(&self, exclude: &[usize]) -> Vec<usize> {
         let enabled: Vec<usize> = (0..self.backends.len())
-            .filter(|i| !self.backends[*i].fallback && self.backends[*i].disabled.is_none() && !exclude.contains(i))
+            .filter(|i| !self.backends[*i].fallback && !self.backends[*i].is_disabled() && !exclude.contains(i))
             .collect();
         let healthy: Vec<usize> =
             enabled.iter().copied().filter(|i| self.backends[*i].state() == BackendState::Enabled).collect();
@@ -215,7 +240,7 @@ impl ServicePool {
 
     /// 未停用的 fallback 後端索引。fallback 是最後手段，unhealthy 時仍會使用。
     pub fn fallback(&self) -> Option<usize> {
-        self.backends.iter().position(|b| b.fallback && b.disabled.is_none())
+        self.backends.iter().position(|b| b.fallback && !b.is_disabled())
     }
 
     /// 依加權輪流挑出最多 `k` 個不重複的後端。
@@ -313,21 +338,30 @@ impl Pool {
         }
     }
 
+    /// 所有後端與其編號（從 1 起的流水號），順序同 `status` 輸出：service 依名稱排序，其內依設定順序（fallback 在最後）。
+    /// 設定變動後 reload 編號可能改變。
+    pub fn numbered(&self) -> Vec<(u32, ServiceKind, &Arc<Backend>)> {
+        let mut kinds = ServiceKind::ALL;
+        kinds.sort_by_key(|k| k.as_str());
+        kinds.into_iter().flat_map(|k| self.service(k).backends.iter().map(move |b| (k, b))).zip(1..).map(|((k, b), id)| (id, k, b)).collect()
+    }
+
     pub fn status(&self) -> PoolStatus {
+        let numbered = self.numbered();
         let services = ServiceKind::ALL
             .iter()
             .map(|k| {
-                let backends = self
-                    .service(*k)
-                    .backends
+                let backends = numbered
                     .iter()
-                    .map(|b| BackendStatus {
+                    .filter(|(_, kind, _)| kind == k)
+                    .map(|(id, _, b)| BackendStatus {
+                        id: *id,
                         name: b.name.clone(),
                         url: b.url.clone(),
                         fallback: b.fallback,
                         weight: b.weight,
                         state: b.state(),
-                        reason: b.disabled.clone(),
+                        reason: b.disabled_reason(),
                         consecutive_failures: b.consecutive_failures(),
                         inflight: b.stats.inflight.load(Ordering::Relaxed),
                         requests: b.stats.requests.load(Ordering::Relaxed),
@@ -361,6 +395,9 @@ pub struct PoolStatus {
 
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct BackendStatus {
+    /// 供 `ai-gateway disable <id>` 使用的流水號；舊版 gateway 的回應沒有此欄位。
+    #[serde(default)]
+    pub id: u32,
     /// 舊版 gateway 的回應沒有此欄位，CLI 讀取時預設為空字串並改顯示 url。
     #[serde(default)]
     pub name: String,
@@ -457,6 +494,27 @@ mod tests {
         assert_eq!(p.pick(2, &[]), vec![1]);
         let p = pool(&[1], &[0]);
         assert!(p.pick(1, &[]).is_empty());
+    }
+
+    #[test]
+    fn manual_disable_excludes_backend() {
+        let p = pool_with_fallback(&[1, 1], &[], Some(None));
+        assert!(p.backends[0].disable_manually());
+        assert!(!p.backends[0].disable_manually());
+        assert_eq!(p.backends[0].state(), BackendState::Disabled);
+        assert_eq!(p.backends[0].disabled_reason().as_deref(), Some(MANUAL_REASON));
+        assert_eq!(p.eligible(&[]), vec![1]);
+        // 一般後端全部手動停用 → 改用 fallback
+        p.backends[1].disable_manually();
+        assert!(p.pick(1, &[]).is_empty());
+        assert_eq!(p.fallback(), Some(2));
+        p.backends[2].disable_manually();
+        assert_eq!(p.fallback(), None);
+        assert!(!p.has_usable());
+        // 探測失敗的原因優先顯示
+        let p = pool(&[1], &[0]);
+        p.backends[0].disable_manually();
+        assert_eq!(p.backends[0].disabled_reason().as_deref(), Some("down"));
     }
 
     #[test]

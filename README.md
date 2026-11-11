@@ -68,9 +68,16 @@ cp config.yaml.example config.yaml
 
 # 優雅關閉：停止接受新連線，等進行中的 request 完成後結束（等同送 SIGTERM）
 ./ai-gateway shutdown
+
+# 手動停用後端：用 status 顯示的編號，或 name / url（加 --service 只套用到單一 service）
+./ai-gateway disable 3
+./ai-gateway disable gpu-1
+./ai-gateway disable http://10.0.0.5:8001 --service embedding
 ```
 
-`reload` / `status` / `reset` / `shutdown` 的 exit code：`0` 成功；`1` 設定錯誤或 reload 失敗（舊設定保留）；`2` 連不到執行中的 gateway。
+手動停用的後端不再接新的 request（進行中的照常完成），`status` 顯示 `disabled (disabled manually)`。要恢復時執行 `./ai-gateway reload`：reload 會重新探測所有後端，探測通過就恢復。
+
+`reload` / `status` / `reset` / `shutdown` / `disable` 的 exit code：`0` 成功；`1` 設定錯誤或 reload 失敗（舊設定保留）；`2` 連不到執行中的 gateway。
 
 升級 binary 或修改監聽位址時，執行 `./ai-gateway shutdown` 或送 `SIGTERM`：gateway 停止接受新連線，等進行中的 request 完成（最多 `shutdown_timeout_secs`）後結束。
 

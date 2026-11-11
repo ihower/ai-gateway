@@ -900,3 +900,86 @@ async fn backend_name_appears_in_status() {
     let v = serde_json::to_value(&status).unwrap();
     assert_eq!(v["services"]["embedding"][0]["name"], json!("gpu-1"));
 }
+
+#[tokio::test]
+async fn control_disable_backend_until_reload() {
+    use ai_gateway::backend::BackendState;
+    use ai_gateway::config::ServiceKind;
+    use ai_gateway::control::{self, Command};
+
+    let (u1, m1) = spawn_mock(1).await;
+    let (u2, m2) = spawn_mock(2).await;
+    let (gw, _) = start_gateway(|d| {
+        config_yaml(d, &[&u1, &u2], &[&u1], &[&u1]).replacen(&format!("- url: \"{u1}\""), &format!("- url: \"{u1}\"\n        name: gpu-1"), 1)
+    })
+    .await;
+    let socket = gw._dir.path().join("control.sock");
+    tokio::spawn(control::serve(control::bind(&socket).unwrap(), gw.app.clone()));
+    let state = |kind: ServiceKind, i: usize| gw.app.pool.load().service(kind).backends[i].state();
+    let send = |cmd: Command| {
+        let socket = socket.clone();
+        async move { control::send(&socket, &cmd).await.unwrap() }
+    };
+
+    // 以 name 停用，只影響 embedding（name 只設在 embedding）
+    let reply = send(Command::Disable { backend: "gpu-1".into(), service: None }).await;
+    assert!(reply.ok, "{:?}", reply.error);
+    assert_eq!(reply.messages.len(), 1);
+    assert_eq!(state(ServiceKind::Embedding, 0), BackendState::Disabled);
+    assert_eq!(state(ServiceKind::Reranker, 0), BackendState::Enabled);
+    let st = gw.app.pool.load().status();
+    assert_eq!(st.services["embedding"][0].reason.as_deref(), Some("disabled manually"));
+
+    // 之後的 request 全部送到 u2
+    let before = m1.hits.load(Ordering::Relaxed);
+    for _ in 0..4 {
+        let (status, _) = post_json(&format!("{}/v1/embeddings", gw.url), json!({"input": "x"})).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    assert_eq!(m1.hits.load(Ordering::Relaxed), before);
+    assert!(m2.hits.load(Ordering::Relaxed) >= 4);
+
+    // 以 url 停用並限定 service；service 無可用後端時警告
+    let reply = send(Command::Disable { backend: u1.clone(), service: Some(ServiceKind::Reranker) }).await;
+    assert_eq!(reply.messages.len(), 1);
+    assert!(reply.warnings.iter().any(|w| w.contains("all reranker backends")));
+    assert_eq!(state(ServiceKind::Decision, 0), BackendState::Enabled);
+    let resp = reqwest::get(format!("{}/readyz", gw.url)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    // 未指定 service 時套用到所有符合者；已停用的標示 already
+    let reply = send(Command::Disable { backend: u1.clone(), service: None }).await;
+    assert_eq!(reply.messages.len(), 3);
+    assert!(reply.messages[0].contains("already disabled"));
+    assert!(!reply.warnings.iter().any(|w| w.contains("all embedding")));
+    assert_eq!(state(ServiceKind::Decision, 0), BackendState::Disabled);
+
+    // reload 重新探測，探測通過即恢復
+    gw.app.reload().await.unwrap();
+    for kind in ServiceKind::ALL {
+        assert_eq!(state(kind, 0), BackendState::Enabled);
+    }
+
+    // 以 status 的編號停用：service 依名稱排序（decision, embedding, reranker），embedding 的第二台是 #3
+    let st = gw.app.pool.load().status();
+    let ids: Vec<u32> = ["decision", "embedding", "reranker"].iter().flat_map(|s| st.services[*s].iter().map(|b| b.id)).collect();
+    assert_eq!(ids, vec![1, 2, 3, 4]);
+    assert_eq!(st.services["embedding"][1].url, u2);
+    let reply = send(Command::Disable { backend: "3".into(), service: None }).await;
+    assert!(reply.ok);
+    assert_eq!(reply.messages.len(), 1);
+    assert!(reply.messages[0].starts_with("#3 "));
+    assert_eq!(state(ServiceKind::Embedding, 1), BackendState::Disabled);
+    assert_eq!(state(ServiceKind::Embedding, 0), BackendState::Enabled);
+    // 編號與 --service 不符時找不到
+    let reply = send(Command::Disable { backend: "1".into(), service: Some(ServiceKind::Embedding) }).await;
+    assert!(!reply.ok);
+    assert!(reply.error.unwrap().contains("no backend #1 in embedding"));
+
+    // 找不到時回錯誤
+    let reply = send(Command::Disable { backend: "nope".into(), service: None }).await;
+    assert!(!reply.ok);
+    assert!(reply.error.unwrap().contains("no backend"));
+    let reply = send(Command::Disable { backend: "99".into(), service: None }).await;
+    assert!(!reply.ok);
+}

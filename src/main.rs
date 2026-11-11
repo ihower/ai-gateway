@@ -3,6 +3,7 @@ use std::process::ExitCode;
 
 use ai_gateway::control::{self, ClientError, Command};
 use ai_gateway::probe::{LoadReport, build_pool};
+use ai_gateway::config::ServiceKind;
 use ai_gateway::{config, server};
 use clap::{Parser, Subcommand};
 
@@ -39,6 +40,18 @@ enum Cmd {
     Reset,
     /// 通知執行中的 gateway 優雅關閉（等同送 SIGTERM）
     Shutdown,
+    /// 手動停用後端（不再分派新的 request），直到下次 reload 重新探測
+    Disable {
+        /// `status` 顯示的編號（如 3），或後端的 name / url
+        backend: String,
+        /// 只套用到指定的 service；省略時套用到所有符合的 service
+        #[arg(long, value_parser = parse_service)]
+        service: Option<ServiceKind>,
+    },
+}
+
+fn parse_service(s: &str) -> Result<ServiceKind, String> {
+    ServiceKind::ALL.into_iter().find(|k| k.as_str() == s).ok_or_else(|| "expected one of: embedding, reranker, decision".to_string())
 }
 
 #[tokio::main]
@@ -67,6 +80,7 @@ async fn main() -> ExitCode {
         Cmd::Shutdown => {
             simple_command(&cli.config, Command::Shutdown, "shutdown requested; gateway is draining in-flight requests").await
         }
+        Cmd::Disable { backend, service } => disable(&cli.config, Command::Disable { backend, service }).await,
     }
 }
 
@@ -173,6 +187,26 @@ async fn simple_command(config_path: &std::path::Path, cmd: Command, done: &str)
     }
 }
 
+/// 送出 disable，印出每個符合的後端與警告。
+async fn disable(config_path: &std::path::Path, cmd: Command) -> ExitCode {
+    match control_send(config_path, cmd).await {
+        Ok(reply) if reply.ok => {
+            for m in &reply.messages {
+                println!("{m}");
+            }
+            for w in &reply.warnings {
+                println!("warning: {w}");
+            }
+            ExitCode::SUCCESS
+        }
+        Ok(reply) => {
+            eprintln!("error: {}", reply.error.unwrap_or_default());
+            ExitCode::from(1)
+        }
+        Err(code) => code,
+    }
+}
+
 async fn status(config_path: &std::path::Path, json: bool) -> ExitCode {
     let reply = match control_send(config_path, Command::Status).await {
         Ok(r) => r,
@@ -200,7 +234,8 @@ async fn status(config_path: &std::path::Path, json: bool) -> ExitCode {
             // decision 沒有筆數概念，不顯示 items
             let items = if service == "decision" { String::new() } else { format!(" items={}", b.items) };
             println!(
-                "{service:<10} {:<width$} {:<10} inflight={} requests={}{items} errors={}{role}{reason}",
+                "#{:<3} {service:<10} {:<width$} {:<10} inflight={} requests={}{items} errors={}{role}{reason}",
+                b.id,
                 label(b),
                 state.as_str().unwrap_or(""),
                 b.inflight,

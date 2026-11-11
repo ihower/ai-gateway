@@ -76,6 +76,57 @@ impl App {
     }
 }
 
+/// `ai-gateway disable` 的結果。
+#[derive(Debug, Default)]
+pub struct DisableOutcome {
+    /// 每個符合的後端一行，例如 `embedding  gpu-1 (http://…)  disabled`。
+    pub messages: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+impl App {
+    /// 手動停用後端，直到下次 reload 重新探測。`target` 為 `status` 顯示的編號，或比對後端的 `name` / url；
+    /// 以 name / url 指定且未給 `service` 時套用到所有符合的 service。
+    /// 與 reload 互斥：停用的是目前生效的池，不會在 reload 探測期間被新池蓋掉而沒有效果。
+    pub async fn disable_backend(&self, target: &str, service: Option<ServiceKind>) -> Result<DisableOutcome, String> {
+        let _serialized = self.reload_lock.lock().await;
+        let pool = self.pool.load_full();
+        let by_id = target.parse::<u32>().ok();
+        let matches: Vec<_> = pool
+            .numbered()
+            .into_iter()
+            .filter(|(id, kind, b)| {
+                service.is_none_or(|s| s == *kind) && if let Some(n) = by_id { *id == n } else { b.name == target || b.url == target }
+            })
+            .collect();
+        if matches.is_empty() {
+            let scope = service.map(|k| format!(" in {k}")).unwrap_or_default();
+            return Err(match by_id {
+                Some(n) => format!("no backend #{n}{scope}; see `ai-gateway status`"),
+                None => format!("no backend named or with url {target:?}{scope}"),
+            });
+        }
+        let mut out = DisableOutcome::default();
+        for kind in ServiceKind::ALL {
+            let svc = pool.service(kind);
+            let mut matched = false;
+            for (id, _, b) in matches.iter().filter(|(_, k, _)| *k == kind) {
+                matched = true;
+                let label = if b.name == b.url { b.url.clone() } else { format!("{} ({})", b.name, b.url) };
+                let changed = b.disable_manually();
+                out.messages.push(format!("#{id:<3} {kind:<10} {label}  {}", if changed { "disabled" } else { "already disabled" }));
+                if changed {
+                    tracing::warn!(service = %kind, backend = %b.url, "backend disabled manually");
+                }
+            }
+            if matched && !svc.has_usable() {
+                out.warnings.push(format!("all {kind} backends are now disabled; requests will get 503"));
+            }
+        }
+        Ok(out)
+    }
+}
+
 pub fn router(app: Arc<App>) -> Router {
     Router::new()
         .route("/v1/embeddings", post(api::embeddings::handle))

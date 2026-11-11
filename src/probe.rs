@@ -112,7 +112,7 @@ pub async fn build_pool(config: Config, version: u64, prev: Option<&Pool>) -> (P
         if let Some(f) = &svc.fallback {
             backends.push(Arc::new(make(&f.url, 1).with_name(f.name.as_deref()).into_fallback(f.request_timeout_ms)));
         }
-        if backends.iter().all(|b| b.disabled.is_some()) {
+        if backends.iter().all(|b| b.is_disabled()) {
             tracing::error!(service = %kind, "all backends disabled; requests will get 503");
         }
         let old: Vec<String> = prev.map(|p| p.service(kind).backends.iter().map(|b| b.url.clone()).collect()).unwrap_or_default();

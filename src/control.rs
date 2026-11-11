@@ -10,6 +10,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
 use crate::backend::PoolStatus;
+use crate::config::ServiceKind;
 use crate::probe::LoadReport;
 use crate::server::App;
 
@@ -20,6 +21,12 @@ pub enum Command {
     Status,
     Reset,
     Shutdown,
+    /// 手動停用後端直到下次 reload；`backend` 為 name 或 url，`service` 省略時套用到所有符合的 service。
+    Disable {
+        backend: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        service: Option<ServiceKind>,
+    },
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -31,6 +38,10 @@ pub struct Reply {
     pub report: Option<LoadReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<PoolStatus>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub messages: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 /// 建立 control socket。若檔案已存在：連得上表示已有 gateway 在跑，拒絕啟動；否則視為殘留檔並移除。
@@ -85,6 +96,10 @@ async fn handle(stream: UnixStream, app: Arc<App>) -> anyhow::Result<()> {
             app.begin_shutdown();
             Reply { ok: true, ..Default::default() }
         }
+        Ok(Command::Disable { backend, service }) => match app.disable_backend(&backend, service).await {
+            Ok(o) => Reply { ok: true, messages: o.messages, warnings: o.warnings, ..Default::default() },
+            Err(e) => Reply { ok: false, error: Some(e), ..Default::default() },
+        },
         Err(e) => Reply { ok: false, error: Some(format!("invalid command: {e}")), ..Default::default() },
     };
     let mut out = serde_json::to_vec(&reply)?;
