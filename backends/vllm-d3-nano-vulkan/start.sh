@@ -39,7 +39,7 @@ fi
 exec distrobox enter "$CONTAINER" -- llama-server \
   -m "$MODEL" \
   --device "$DEVICE" \
-  -c "$CTX" -b 2048 -ub 512 \
+  -c "$CTX" -b "$CTX" -ub "$CTX" \
   -np 1 \
   -fa on \
   -ngl 99 \
