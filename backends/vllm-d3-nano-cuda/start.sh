@@ -9,7 +9,7 @@ set -euo pipefail
 GPU="${GPU:-0}"
 PORT="${PORT:-12371}"
 HOST="${HOST:-0.0.0.0}"
-MODEL="${MODEL:-/mnt/data/models/vllm/vllm-d3-nano-Q8_0.gguf}"
+MODEL="${MODEL:-/home/ihower/vllm-d3-nano-Q8_0.gguf}"
 CTX="${CTX:-32768}"
 
 # 解析 --gpu / --port（支援 `--opt 值` 與 `--opt=值`），其餘參數原樣傳給 llama serve
