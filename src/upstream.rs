@@ -10,7 +10,7 @@ use bytes::Bytes;
 use futures::StreamExt;
 use serde_json::json;
 
-use crate::backend::{Backend, ServicePool};
+use crate::backend::{Backend, ServicePool, now_ms};
 
 pub const REQUEST_ID: &str = "x-request-id";
 
@@ -207,6 +207,7 @@ fn request(svc: &ServicePool, idx: usize, path: &str, body: Bytes, fwd: &Forward
 pub async fn call_once(svc: &ServicePool, idx: usize, path: &str, body: Bytes, fwd: &Forward) -> Result<Buffered, CallError> {
     let backend = &svc.backends[idx];
     let _guard = backend.start_call();
+    let started = now_ms();
     let result = async {
         let resp = request(svc, idx, path, body, fwd).send().await.map_err(|e| classify(&e))?;
         let status = resp.status();
@@ -220,6 +221,7 @@ pub async fn call_once(svc: &ServicePool, idx: usize, path: &str, body: Bytes, f
     }
     .await;
     match &result {
+        Err(CallError::Timeout) => backend.record_timeout(&svc.tuning, started),
         Err(e) if e.is_backend_failure() => backend.record_failure(&svc.tuning, &e.reason()),
         _ => backend.record_success(),
     }
@@ -294,6 +296,7 @@ pub async fn forward_streaming(svc: &ServicePool, path: &str, body: Bytes, fwd: 
         tried.push(idx);
         let backend = &svc.backends[idx];
         let guard = backend.start_call();
+        let started = now_ms();
         match request(svc, idx, path, body.clone(), fwd).send().await {
             Ok(resp) => {
                 let status = resp.status();
@@ -318,7 +321,10 @@ pub async fn forward_streaming(svc: &ServicePool, path: &str, body: Bytes, fwd: 
             }
             Err(e) => {
                 let err = classify(&e);
-                backend.record_failure(&svc.tuning, &err.reason());
+                match err {
+                    CallError::Timeout => backend.record_timeout(&svc.tuning, started),
+                    _ => backend.record_failure(&svc.tuning, &err.reason()),
+                }
                 fwd.log.record(backend, err.reason());
                 if !matches!(err, CallError::Connect(_)) {
                     return Err(err.into());

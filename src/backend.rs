@@ -11,7 +11,7 @@ use crate::config::{Config, ServiceConfig, ServiceKind, Tuning};
 
 static START: LazyLock<Instant> = LazyLock::new(Instant::now);
 
-fn now_ms() -> u64 {
+pub fn now_ms() -> u64 {
     START.elapsed().as_millis() as u64
 }
 
@@ -86,6 +86,8 @@ pub struct Backend {
     pub request_timeout_ms: Option<u64>,
     consecutive_failures: AtomicU32,
     unhealthy_until_ms: AtomicU64,
+    /// 最近一次成功回應的時間（unix ms），用來判斷逾時是過載還是後端卡死。
+    last_success_ms: AtomicU64,
     pub stats: Arc<BackendStats>,
 }
 
@@ -110,6 +112,7 @@ impl Backend {
             request_timeout_ms: None,
             consecutive_failures: AtomicU32::new(0),
             unhealthy_until_ms: AtomicU64::new(0),
+            last_success_ms: AtomicU64::new(0),
             stats,
         }
     }
@@ -172,8 +175,21 @@ impl Backend {
     }
 
     pub fn record_success(&self) {
+        self.last_success_ms.fetch_max(now_ms(), Ordering::Relaxed);
         if self.consecutive_failures.swap(0, Ordering::Relaxed) != 0 {
             self.unhealthy_until_ms.store(0, Ordering::Relaxed);
+        }
+    }
+
+    /// 逾時：若這段等待期間同一後端仍有其他 request 成功完成，代表後端活著只是過載排隊，
+    /// 只計入 errors，不累積連續失敗次數（避免尖峰時把後端踢出、讓剩下的後端更塞）；
+    /// 等待期間完全沒有成功回應才視為後端失效，照一般失敗處理。
+    pub fn record_timeout(&self, tuning: &Tuning, started_ms: u64) {
+        if self.last_success_ms.load(Ordering::Relaxed) >= started_ms {
+            self.stats.errors.fetch_add(1, Ordering::Relaxed);
+            tracing::debug!(service = %self.service, backend = %self.url, "timeout while backend still serving; treated as overload");
+        } else {
+            self.record_failure(tuning, "timeout");
         }
     }
 
@@ -534,6 +550,27 @@ mod tests {
         assert_eq!(p.eligible(&[]), vec![0, 1]);
         p.backends[0].record_success();
         assert_eq!(p.backends[0].state(), BackendState::Enabled);
+    }
+
+    #[test]
+    fn overload_timeout_does_not_mark_unhealthy() {
+        let p = pool(&[1], &[]);
+        let t = Tuning::default();
+        let started = now_ms();
+        p.backends[0].record_success();
+        // 等待期間後端仍有成功回應 → 視為過載，不累積連續失敗
+        for _ in 0..5 {
+            p.backends[0].record_timeout(&t, started);
+        }
+        assert_eq!(p.backends[0].consecutive_failures(), 0);
+        assert_eq!(p.backends[0].state(), BackendState::Enabled);
+        assert_eq!(p.backends[0].stats.errors.load(Ordering::Relaxed), 5);
+        // 等待期間沒有任何成功回應 → 視為後端失效
+        let later = now_ms() + 1;
+        for _ in 0..3 {
+            p.backends[0].record_timeout(&t, later);
+        }
+        assert_eq!(p.backends[0].state(), BackendState::Unhealthy);
     }
 
     #[test]

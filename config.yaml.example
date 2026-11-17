@@ -23,6 +23,7 @@ probe:
 services:
   # weight：依比例分配。embedding / reranker 拆分時依權重切份數，decision 依權重輪流分派。
   embedding:
+    request_timeout_ms: 10000         # 單筆 embedding 很快，逾時就早點改送其他後端
     backends:
       - url: "http://gpu-1.example.com:12351"
         name: "gpu-1"                # 選填：status 與 /admin/backends 顯示用的名稱，未填則用 url
@@ -36,6 +37,7 @@ services:
       request_timeout_ms: 120000     # CPU 推論較慢
 
   reranker:
+    request_timeout_ms: 60000         # 單批 chunk 多、尖峰排隊久，比 defaults 的 30 秒長
     chunking:                        # 超過 max_chars 字元的 document 切段分別算分，取最高分；fallback（Cohere）收原始 request、不切
       max_chars: 2000
       overlap_chars: 200
@@ -55,6 +57,7 @@ services:
       request_timeout_ms: 60000
 
   decision:
+    request_timeout_ms: 120000        # LLM 生成較慢；decision_reranker 每段呼叫也沿用這個值
     backends:
       - url: "http://gpu-1.example.com:12371"
         name: "gpu-1"
