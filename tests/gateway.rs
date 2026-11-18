@@ -983,3 +983,62 @@ async fn control_disable_backend_until_reload() {
     let reply = send(Command::Disable { backend: "99".into(), service: None }).await;
     assert!(!reply.ok);
 }
+
+#[tokio::test]
+async fn control_enable_backend_after_probe_timeout() {
+    use ai_gateway::backend::BackendState;
+    use ai_gateway::config::ServiceKind;
+    use ai_gateway::control::{self, Command};
+
+    let (u1, m1) = spawn_mock(1).await;
+    let (u2, _m2) = spawn_mock(2).await;
+    let (gw, _) = start_gateway(|d| config_yaml(d, &[&u1, &u2], &[&u1], &[&u1])).await;
+    let socket = gw._dir.path().join("control.sock");
+    tokio::spawn(control::serve(control::bind(&socket).unwrap(), gw.app.clone()));
+    let state = |kind: ServiceKind, i: usize| gw.app.pool.load().service(kind).backends[i].state();
+    let send = |cmd: Command| {
+        let socket = socket.clone();
+        async move { control::send(&socket, &cmd).await.unwrap() }
+    };
+
+    // reload 時 u1 排隊過久，探測逾時（probe timeout 1 秒）而被停用
+    m1.delay_ms.store(1500, Ordering::Relaxed);
+    let report = gw.app.reload().await.unwrap();
+    assert_eq!(report.disabled.len(), 3);
+    assert_eq!(state(ServiceKind::Embedding, 0), BackendState::Disabled);
+    m1.delay_ms.store(0, Ordering::Relaxed);
+
+    // 強制啟用 embedding 的 u1：探測失敗被忽略，之後的 request 會分派給它
+    let reply = send(Command::Enable { backend: u1.clone(), service: Some(ServiceKind::Embedding) }).await;
+    assert!(reply.ok, "{:?}", reply.error);
+    assert_eq!(reply.messages.len(), 1);
+    assert!(reply.messages[0].ends_with(" enabled"), "{}", reply.messages[0]);
+    assert_eq!(state(ServiceKind::Embedding, 0), BackendState::Enabled);
+    assert_eq!(state(ServiceKind::Reranker, 0), BackendState::Disabled);
+    assert_eq!(gw.app.pool.load().status().services["embedding"][0].reason, None);
+    let before = m1.hits.load(Ordering::Relaxed);
+    for _ in 0..4 {
+        let (status, _) = post_json(&format!("{}/v1/embeddings", gw.url), json!({"input": "x"})).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    assert!(m1.hits.load(Ordering::Relaxed) > before);
+
+    // 未指定 service 時套用到所有符合者；已啟用的標示 already
+    let reply = send(Command::Enable { backend: u1.clone(), service: None }).await;
+    assert_eq!(reply.messages.len(), 3);
+    assert!(reply.messages[0].contains("already enabled") || reply.messages[1].contains("already enabled"));
+    for kind in ServiceKind::ALL {
+        assert_eq!(state(kind, 0), BackendState::Enabled);
+    }
+
+    // 手動停用後也可用 enable 解除
+    send(Command::Disable { backend: u2.clone(), service: None }).await;
+    assert_eq!(state(ServiceKind::Embedding, 1), BackendState::Disabled);
+    let reply = send(Command::Enable { backend: u2.clone(), service: None }).await;
+    assert!(reply.messages[0].ends_with(" enabled"));
+    assert_eq!(state(ServiceKind::Embedding, 1), BackendState::Enabled);
+
+    // 找不到時回錯誤
+    let reply = send(Command::Enable { backend: "nope".into(), service: None }).await;
+    assert!(!reply.ok);
+}

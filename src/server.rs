@@ -76,7 +76,7 @@ impl App {
     }
 }
 
-/// `ai-gateway disable` 的結果。
+/// `ai-gateway disable` / `enable` 的結果。
 #[derive(Debug, Default)]
 pub struct DisableOutcome {
     /// 每個符合的後端一行，例如 `embedding  gpu-1 (http://…)  disabled`。
@@ -89,6 +89,16 @@ impl App {
     /// 以 name / url 指定且未給 `service` 時套用到所有符合的 service。
     /// 與 reload 互斥：停用的是目前生效的池，不會在 reload 探測期間被新池蓋掉而沒有效果。
     pub async fn disable_backend(&self, target: &str, service: Option<ServiceKind>) -> Result<DisableOutcome, String> {
+        self.set_backend_enabled(target, service, false).await
+    }
+
+    /// 強制啟用後端（解除手動停用、忽略探測失敗、清除 unhealthy），直到下次 reload 重新探測。
+    /// 用於 reload 探測時後端只是排隊過久沒回應而被誤判失效的情況。指定方式同 `disable_backend`。
+    pub async fn enable_backend(&self, target: &str, service: Option<ServiceKind>) -> Result<DisableOutcome, String> {
+        self.set_backend_enabled(target, service, true).await
+    }
+
+    async fn set_backend_enabled(&self, target: &str, service: Option<ServiceKind>, enable: bool) -> Result<DisableOutcome, String> {
         let _serialized = self.reload_lock.lock().await;
         let pool = self.pool.load_full();
         let by_id = target.parse::<u32>().ok();
@@ -106,6 +116,7 @@ impl App {
                 None => format!("no backend named or with url {target:?}{scope}"),
             });
         }
+        let (done, already) = if enable { ("enabled", "already enabled") } else { ("disabled", "already disabled") };
         let mut out = DisableOutcome::default();
         for kind in ServiceKind::ALL {
             let svc = pool.service(kind);
@@ -113,13 +124,15 @@ impl App {
             for (id, _, b) in matches.iter().filter(|(_, k, _)| *k == kind) {
                 matched = true;
                 let label = if b.name == b.url { b.url.clone() } else { format!("{} ({})", b.name, b.url) };
-                let changed = b.disable_manually();
-                out.messages.push(format!("#{id:<3} {kind:<10} {label}  {}", if changed { "disabled" } else { "already disabled" }));
-                if changed {
+                let changed = if enable { b.enable_manually() } else { b.disable_manually() };
+                out.messages.push(format!("#{id:<3} {kind:<10} {label}  {}", if changed { done } else { already }));
+                if changed && enable {
+                    tracing::warn!(service = %kind, backend = %b.url, "backend enabled manually");
+                } else if changed {
                     tracing::warn!(service = %kind, backend = %b.url, "backend disabled manually");
                 }
             }
-            if matched && !svc.has_usable() {
+            if matched && !enable && !svc.has_usable() {
                 out.warnings.push(format!("all {kind} backends are now disabled; requests will get 503"));
             }
         }

@@ -130,11 +130,13 @@ services:
 | `ai-gateway reset` | 將執行中 gateway 各後端的累計 requests / items / errors / 延遲統計歸零（`inflight` 與健康狀態不變） |
 | `ai-gateway shutdown` | 通知執行中的 gateway 優雅關閉，流程同 `SIGTERM`（§7.2）；送出後立即返回，不等 process 結束 |
 | `ai-gateway disable <id\|name\|url> [--service <s>]` | 手動停用後端：之後的 request 不再分派給它，進行中的 request 照常完成；狀態顯示 `disabled`（原因 `disabled manually`）。下次 `reload` 重新探測決定是否恢復 |
+| `ai-gateway enable <id\|name\|url> [--service <s>]` | 強制啟用後端：解除手動停用、忽略探測失敗造成的 `disabled`，並清除 `unhealthy` 狀態與連續失敗次數。效果持續到下次 `reload` 重新探測 |
 
 - `requests` 是對該後端的呼叫次數（含失敗與重試）；拆分時每個被分到的後端各 +1，與分到幾筆無關。`items` 是該後端**成功**處理的筆數：embedding 為 `input` 數、rerank 為 document 數（有切段時為段數；整包改送 fallback 時為原始 document 數），依權重拆分時看 `items` 才能反映各後端實際分到的量。decision 沒有筆數概念，不顯示 `items`。
 - `status`（含 `--json` 與 `/admin/backends`）為每個後端顯示編號 `#N`：從 1 起的流水號，順序同 `status` 輸出（service 依名稱排序，其內依設定順序，fallback 在最後）。設定變動後 reload，編號可能改變。
-- `disable` 可用編號，或以後端的 `name` / url 比對；以 name / url 指定且未給 `--service` 時套用到所有符合的 service（例如三個 service 共用的 fallback），找不到符合者回 exit `1`。手動停用只持續到下次 `reload`（或重啟）：reload 會重新探測所有後端，探測通過即恢復，因此沒有 `enable` 指令。停用後該 service 已無可用後端時會印出警告（request 會得到 503），但仍會執行。手動停用的 fallback 也不會被使用。
-- `reload` / `status` / `reset` / `shutdown` / `disable` 透過 `server.control_socket` 與 gateway 溝通，不經過網路埠。
+- `disable` 可用編號，或以後端的 `name` / url 比對；以 name / url 指定且未給 `--service` 時套用到所有符合的 service（例如三個 service 共用的 fallback），找不到符合者回 exit `1`。手動停用只持續到下次 `reload`（或重啟）：reload 會重新探測所有後端，探測通過即恢復；也可用 `enable` 立即恢復。停用後該 service 已無可用後端時會印出警告（request 會得到 503），但仍會執行。手動停用的 fallback 也不會被使用。
+- `enable` 的指定方式同 `disable`。用途是後端其實活著、只是 reload 探測當下排隊過久沒回應而被誤判 `disabled` 的情況（§8.2）；強制啟用不會重新探測，由操作者負責判斷。下次 `reload`（或重啟）重新探測，仍失敗則再次停用。
+- `reload` / `status` / `reset` / `shutdown` / `disable` / `enable` 透過 `server.control_socket` 與 gateway 溝通，不經過網路埠。
 - 未指定 `--config` 時，這些指令讀取 `--config` / `AI_GATEWAY_CONFIG` / `./config.yaml` 中的 `control_socket` 來找到 gateway。
 - Exit code：`0` 成功；`1` 設定錯誤或 reload 失敗（舊設定保留）；`2` 連不到執行中的 gateway。
 - 有後端被停用時 reload 仍算成功（exit `0`），但會在輸出中標出。
@@ -441,7 +443,7 @@ decision   (no change)
 - 有後端被停用**不會**讓啟動或 reload 失敗；即使某 service 全部停用，gateway 仍會啟動（記錄 `ERROR` 日誌，該 service 回 `503`）
 
 **停用後端不會自動恢復**
-- `disabled` 的後端在本次設定生效期間一律不使用，gateway 不會在背景重新探測
+- `disabled` 的後端在本次設定生效期間一律不使用（除非以 `ai-gateway enable` 強制啟用），gateway 不會在背景重新探測
 - 後端修好後，執行 `ai-gateway reload` 才會重新探測，通過即加回分流
 - 可先用 `ai-gateway check` 確認後端已能通過探測，再執行 `reload`
 

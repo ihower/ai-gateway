@@ -73,11 +73,16 @@ cp config.yaml.example config.yaml
 ./ai-gateway disable 3
 ./ai-gateway disable gpu-1
 ./ai-gateway disable http://10.0.0.5:8001 --service embedding
+
+# 強制啟用後端（例如 reload 探測時後端排隊太久沒回應而被誤判失效），指定方式同 disable
+./ai-gateway enable 3
 ```
 
-手動停用的後端不再接新的 request（進行中的照常完成），`status` 顯示 `disabled (disabled manually)`。要恢復時執行 `./ai-gateway reload`：reload 會重新探測所有後端，探測通過就恢復。
+手動停用的後端不再接新的 request（進行中的照常完成），`status` 顯示 `disabled (disabled manually)`。要恢復時執行 `./ai-gateway enable`，或 `./ai-gateway reload`（reload 會重新探測所有後端，探測通過就恢復）。
 
-`reload` / `status` / `reset` / `shutdown` / `disable` 的 exit code：`0` 成功；`1` 設定錯誤或 reload 失敗（舊設定保留）；`2` 連不到執行中的 gateway。
+`enable` 會強制啟用後端：解除手動停用、忽略 reload / 啟動時的探測失敗，並清除 unhealthy 狀態。適用於後端其實活著、只是探測當下排隊太多沒回應的情況。效果只持續到下次 reload：屆時重新探測，若仍失敗會再次停用。
+
+`reload` / `status` / `reset` / `shutdown` / `disable` / `enable` 的 exit code：`0` 成功；`1` 設定錯誤或 reload 失敗（舊設定保留）；`2` 連不到執行中的 gateway。
 
 升級 binary 或修改監聽位址時，執行 `./ai-gateway shutdown` 或送 `SIGTERM`：gateway 停止接受新連線，等進行中的 request 完成（最多 `shutdown_timeout_secs`）後結束。
 

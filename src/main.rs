@@ -48,6 +48,14 @@ enum Cmd {
         #[arg(long, value_parser = parse_service)]
         service: Option<ServiceKind>,
     },
+    /// 強制啟用後端（含 reload 探測失敗被停用者），並清除 unhealthy 狀態，直到下次 reload 重新探測
+    Enable {
+        /// `status` 顯示的編號（如 3），或後端的 name / url
+        backend: String,
+        /// 只套用到指定的 service；省略時套用到所有符合的 service
+        #[arg(long, value_parser = parse_service)]
+        service: Option<ServiceKind>,
+    },
 }
 
 fn parse_service(s: &str) -> Result<ServiceKind, String> {
@@ -80,7 +88,8 @@ async fn main() -> ExitCode {
         Cmd::Shutdown => {
             simple_command(&cli.config, Command::Shutdown, "shutdown requested; gateway is draining in-flight requests").await
         }
-        Cmd::Disable { backend, service } => disable(&cli.config, Command::Disable { backend, service }).await,
+        Cmd::Disable { backend, service } => backend_command(&cli.config, Command::Disable { backend, service }).await,
+        Cmd::Enable { backend, service } => backend_command(&cli.config, Command::Enable { backend, service }).await,
     }
 }
 
@@ -187,8 +196,8 @@ async fn simple_command(config_path: &std::path::Path, cmd: Command, done: &str)
     }
 }
 
-/// 送出 disable，印出每個符合的後端與警告。
-async fn disable(config_path: &std::path::Path, cmd: Command) -> ExitCode {
+/// 送出 disable / enable，印出每個符合的後端與警告。
+async fn backend_command(config_path: &std::path::Path, cmd: Command) -> ExitCode {
     match control_send(config_path, cmd).await {
         Ok(reply) if reply.ok => {
             for m in &reply.messages {

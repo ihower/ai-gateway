@@ -27,6 +27,12 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         service: Option<ServiceKind>,
     },
+    /// 強制啟用後端（含探測失敗被停用者）直到下次 reload；參數同 `Disable`。
+    Enable {
+        backend: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        service: Option<ServiceKind>,
+    },
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -97,6 +103,10 @@ async fn handle(stream: UnixStream, app: Arc<App>) -> anyhow::Result<()> {
             Reply { ok: true, ..Default::default() }
         }
         Ok(Command::Disable { backend, service }) => match app.disable_backend(&backend, service).await {
+            Ok(o) => Reply { ok: true, messages: o.messages, warnings: o.warnings, ..Default::default() },
+            Err(e) => Reply { ok: false, error: Some(e), ..Default::default() },
+        },
+        Ok(Command::Enable { backend, service }) => match app.enable_backend(&backend, service).await {
             Ok(o) => Reply { ok: true, messages: o.messages, warnings: o.warnings, ..Default::default() },
             Err(e) => Reply { ok: false, error: Some(e), ..Default::default() },
         },

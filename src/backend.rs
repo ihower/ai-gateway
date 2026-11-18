@@ -80,6 +80,8 @@ pub struct Backend {
     pub disabled: Option<String>,
     /// 以 `ai-gateway disable` 手動停用，直到下次 reload 重新探測。
     manually_disabled: AtomicBool,
+    /// 以 `ai-gateway enable` 強制啟用，忽略探測失敗的 `disabled`，直到下次 reload 重新探測。
+    probe_overridden: AtomicBool,
     /// 只在所有一般後端都失效時使用（SPEC §8.6）。
     pub fallback: bool,
     /// 覆寫 service 的 `request_timeout_ms`。
@@ -108,6 +110,7 @@ impl Backend {
             weight,
             disabled,
             manually_disabled: AtomicBool::new(false),
+            probe_overridden: AtomicBool::new(false),
             fallback: false,
             request_timeout_ms: None,
             consecutive_failures: AtomicU32::new(0),
@@ -139,14 +142,32 @@ impl Backend {
         !self.manually_disabled.swap(true, Ordering::Relaxed)
     }
 
-    /// 探測失敗或手動停用。
+    /// 強制啟用，回傳是否有變更（原本為停用或 unhealthy）：解除手動停用、忽略探測失敗，並清除 unhealthy 狀態與連續失敗次數。
+    /// 用於探測時後端只是排隊過久沒回應而被誤判失效的情況；效果持續到下次 reload 重新探測。
+    pub fn enable_manually(&self) -> bool {
+        let was = self.state() != BackendState::Enabled;
+        self.manually_disabled.store(false, Ordering::Relaxed);
+        if self.disabled.is_some() {
+            self.probe_overridden.store(true, Ordering::Relaxed);
+        }
+        self.consecutive_failures.store(0, Ordering::Relaxed);
+        self.unhealthy_until_ms.store(0, Ordering::Relaxed);
+        was
+    }
+
+    /// 探測失敗而未被強制啟用時的原因。
+    fn probe_failure(&self) -> Option<&String> {
+        self.disabled.as_ref().filter(|_| !self.probe_overridden.load(Ordering::Relaxed))
+    }
+
+    /// 探測失敗（未被強制啟用）或手動停用。
     pub fn is_disabled(&self) -> bool {
-        self.disabled.is_some() || self.is_manually_disabled()
+        self.probe_failure().is_some() || self.is_manually_disabled()
     }
 
     /// 停用原因：探測失敗優先，其次為手動停用。
     pub fn disabled_reason(&self) -> Option<String> {
-        self.disabled.clone().or_else(|| self.is_manually_disabled().then(|| MANUAL_REASON.to_string()))
+        self.probe_failure().cloned().or_else(|| self.is_manually_disabled().then(|| MANUAL_REASON.to_string()))
     }
 
     pub fn state(&self) -> BackendState {
@@ -531,6 +552,28 @@ mod tests {
         let p = pool(&[1], &[0]);
         p.backends[0].disable_manually();
         assert_eq!(p.backends[0].disabled_reason().as_deref(), Some("down"));
+    }
+
+    #[test]
+    fn manual_enable_overrides_probe_failure_and_unhealthy() {
+        let tuning = Tuning { unhealthy_threshold: 1, ..Tuning::default() };
+        // 探測失敗 + 手動停用 → 強制啟用後兩者都解除
+        let p = pool(&[1, 1], &[0]);
+        p.backends[0].disable_manually();
+        assert!(p.backends[0].enable_manually());
+        assert_eq!(p.backends[0].state(), BackendState::Enabled);
+        assert_eq!(p.backends[0].disabled_reason(), None);
+        assert_eq!(p.eligible(&[]), vec![0, 1]);
+        assert!(!p.backends[0].enable_manually());
+        // 之後仍可再手動停用
+        p.backends[0].disable_manually();
+        assert_eq!(p.backends[0].disabled_reason().as_deref(), Some(MANUAL_REASON));
+        // unhealthy → 清除冷卻與連續失敗次數
+        p.backends[1].record_failure(&tuning, "boom");
+        assert_eq!(p.backends[1].state(), BackendState::Unhealthy);
+        assert!(p.backends[1].enable_manually());
+        assert_eq!(p.backends[1].state(), BackendState::Enabled);
+        assert_eq!(p.backends[1].consecutive_failures(), 0);
     }
 
     #[test]
