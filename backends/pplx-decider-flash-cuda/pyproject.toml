@@ -1,0 +1,23 @@
+[project]
+name = "pplx-decider-flash-server"
+version = "0.1.0"
+license = "Apache-2.0"
+description = "vLLM SystemOne decision API for perplexity-ai/pplx-decider-flash-v1.3 (NVFP4)"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "orjson>=3.13.0",
+    "vllm>=0.34.0",
+]
+
+[dependency-groups]
+quantize = [
+    "nvidia-modelopt[hf]",
+]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
