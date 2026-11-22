@@ -12,7 +12,7 @@ PORT="${PORT:-12372}"
 HOST="${HOST:-0.0.0.0}"
 MODEL="${MODEL:-/mnt/data/models/pplx/pplx-decider-flash-v1.3-vllm-nvfp4}"
 SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-pplx-decider-flash-v1.3}"
-export MAX_MODEL_LEN="${MAX_MODEL_LEN:-32768}"
+export MAX_MODEL_LEN="${MAX_MODEL_LEN:-30720}"
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.5}"
 
 # 解析 --gpu / --port（支援 `--opt 值` 與 `--opt=值`），其餘參數原樣傳給 vllm serve

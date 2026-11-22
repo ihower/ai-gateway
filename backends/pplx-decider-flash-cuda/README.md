@@ -44,7 +44,7 @@ CUDA_VISIBLE_DEVICES=1 uv run --no-sync python quantize_nvfp4.py \
 | `PORT` / `--port` | `12372` | 監聽 port |
 | `HOST` | `0.0.0.0` | 監聽位址 |
 | `MODEL` | `/mnt/data/models/pplx/pplx-decider-flash-v1.3-vllm-nvfp4` | 模型目錄 |
-| `MAX_MODEL_LEN` | `32768` | 單一 sequence（state + 一題）的 token 上限，超過回 400，不截斷 |
+| `MAX_MODEL_LEN` | `30720` | 單一 sequence（state + 一題）的 token 上限，超過回 400，不截斷 |
 | `GPU_MEMORY_UTILIZATION` | `0.5` | vLLM 可用的 GPU 記憶體比例 |
 | `VLLM_PROCESS_NAME_PREFIX` | `pplx-decider-flash` | `ps` 顯示的 process 名稱前綴 |
 
