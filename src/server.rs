@@ -145,6 +145,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/v1/embeddings", post(api::embeddings::handle))
         .route("/v2/rerank", post(api::rerank::handle))
         .route("/v1/systemone", post(api::decision))
+        .route("/v1/chat/completions", post(api::chat_completions))
         .route("/decision/v2/rerank", post(api::decision_rerank::handle))
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
@@ -207,8 +208,7 @@ async fn readyz(State(app): State<Arc<App>>) -> Response {
         return (StatusCode::SERVICE_UNAVAILABLE, axum::Json(json!({"status": "draining"}))).into_response();
     }
     let pool = app.pool.load();
-    let unavailable: Vec<&str> =
-        ServiceKind::ALL.iter().filter(|k| !pool.service(**k).has_usable()).map(|k| k.as_str()).collect();
+    let unavailable: Vec<&str> = pool.configured().filter(|k| !pool.service(*k).has_usable()).map(|k| k.as_str()).collect();
     if unavailable.is_empty() {
         axum::Json(json!({"status": "ready"})).into_response()
     } else {

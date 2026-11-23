@@ -13,17 +13,25 @@ pub enum ServiceKind {
     Embedding,
     Reranker,
     Decision,
+    /// OpenAI `/v1/chat/completions`；選填，未設定時沒有後端。
+    Chat,
 }
 
 impl ServiceKind {
-    pub const ALL: [ServiceKind; 3] = [ServiceKind::Embedding, ServiceKind::Reranker, ServiceKind::Decision];
+    pub const ALL: [ServiceKind; 4] = [ServiceKind::Embedding, ServiceKind::Reranker, ServiceKind::Decision, ServiceKind::Chat];
 
     pub fn as_str(self) -> &'static str {
         match self {
             ServiceKind::Embedding => "embedding",
             ServiceKind::Reranker => "reranker",
             ServiceKind::Decision => "decision",
+            ServiceKind::Chat => "chat",
         }
+    }
+
+    /// 是否有「處理筆數」（`items`）的概念；decision 與 chat 整包轉發，沒有。
+    pub fn counts_items(self) -> bool {
+        matches!(self, ServiceKind::Embedding | ServiceKind::Reranker)
     }
 }
 
@@ -41,6 +49,8 @@ pub struct Config {
     pub embedding: ServiceConfig,
     pub reranker: ServiceConfig,
     pub decision: ServiceConfig,
+    /// 選填；未設定時 `backends` 為空（見 `ServiceConfig::is_configured`）。
+    pub chat: ServiceConfig,
     /// 以 decision 後端提供 rerank（SPEC §6.4）；`None` 表示未啟用。
     pub decision_reranker: Option<DecisionRerankerConfig>,
 }
@@ -51,6 +61,7 @@ impl Config {
             ServiceKind::Embedding => &self.embedding,
             ServiceKind::Reranker => &self.reranker,
             ServiceKind::Decision => &self.decision,
+            ServiceKind::Chat => &self.chat,
         }
     }
 }
@@ -116,6 +127,16 @@ pub struct ServiceConfig {
 }
 
 impl ServiceConfig {
+    /// 未設定的選填 service（目前只有 chat）。
+    fn unconfigured(defaults: &Tuning) -> Self {
+        ServiceConfig { tuning: defaults.clone(), probe_model: None, backends: Vec::new(), fallback: None, chunking: None }
+    }
+
+    /// 設定檔中有這個 service（至少一個後端）。
+    pub fn is_configured(&self) -> bool {
+        !self.backends.is_empty()
+    }
+
     /// 所有後端 URL，fallback 排在最後。
     pub fn urls(&self) -> impl Iterator<Item = &str> {
         self.backends.iter().map(|b| b.url.as_str()).chain(self.fallback.iter().map(|f| f.url.as_str()))
@@ -265,6 +286,8 @@ struct RawServices {
     reranker: RawService,
     decision: RawService,
     #[serde(default)]
+    chat: Option<RawService>,
+    #[serde(default)]
     decision_reranker: Option<DecisionRerankerConfig>,
 }
 
@@ -409,6 +432,10 @@ pub fn parse(text: &str, path: &Path) -> anyhow::Result<Config> {
         embedding: raw.services.embedding.into_config(ServiceKind::Embedding, &defaults)?,
         reranker: raw.services.reranker.into_config(ServiceKind::Reranker, &defaults)?,
         decision: raw.services.decision.into_config(ServiceKind::Decision, &defaults)?,
+        chat: match raw.services.chat {
+            Some(c) => c.into_config(ServiceKind::Chat, &defaults)?,
+            None => ServiceConfig::unconfigured(&defaults),
+        },
         decision_reranker: raw.services.decision_reranker,
         path,
     })
@@ -518,6 +545,21 @@ services:
         assert!(parse(&dup_fallback, Path::new("c.yaml")).unwrap_err().to_string().contains("also listed"));
         let rerank_fallback = SAMPLE.replace("    request_timeout_ms: 5000\n", "    request_timeout_ms: 5000\n    fallback: {url: \"http://10.0.0.9:1\"}\n");
         assert_eq!(parse(&rerank_fallback, Path::new("c.yaml")).unwrap().reranker.fallback.unwrap().url, "http://10.0.0.9:1");
+    }
+
+    #[test]
+    fn chat_is_optional() {
+        let c = parse(SAMPLE, Path::new("c.yaml")).unwrap();
+        assert!(!c.chat.is_configured());
+        assert_eq!(c.chat.urls().count(), 0);
+        let with_chat = format!("{SAMPLE}  chat:\n    probe_model: qwen\n    request_timeout_ms: 600000\n    backends: [{{url: \"http://10.0.0.5:1/\"}}]\n");
+        let c = parse(&with_chat, Path::new("c.yaml")).unwrap();
+        assert!(c.chat.is_configured());
+        assert_eq!(c.chat.backends[0].url, "http://10.0.0.5:1");
+        assert_eq!(c.chat.probe_model.as_deref(), Some("qwen"));
+        assert_eq!((c.chat.tuning.request_timeout_ms, c.chat.tuning.max_retries), (600000, 2));
+        let empty = format!("{SAMPLE}  chat:\n    backends: []\n");
+        assert!(parse(&empty, Path::new("c.yaml")).unwrap_err().to_string().contains("services.chat.backends"));
     }
 
     #[test]

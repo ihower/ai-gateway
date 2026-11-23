@@ -9,7 +9,7 @@ use std::sync::Arc;
 use axum::Extension;
 use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, header};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
 use serde_json::Value;
 
@@ -124,6 +124,19 @@ pub async fn decision(State(app): State<Arc<App>>, Extension(log): Extension<Cal
     forward_streaming(&pool.decision, "/v1/systemone", body, &fwd)
         .await
         .unwrap_or_else(|e| e.into_response(Flavor::Plain))
+}
+
+/// `POST /v1/chat/completions`：OpenAI 格式，整包轉發到單一後端，支援 `stream: true` 的 SSE（SPEC §6.5）。
+pub async fn chat_completions(State(app): State<Arc<App>>, Extension(log): Extension<CallLog>, headers: HeaderMap, body: Bytes) -> Response {
+    let pool = app.pool.load_full();
+    if !pool.chat.backends.is_empty() {
+        let fwd = Forward::new(&headers, log);
+        return forward_streaming(&pool.chat, "/v1/chat/completions", body, &fwd)
+            .await
+            .unwrap_or_else(|e| e.into_response(Flavor::OpenAi));
+    }
+    let body = serde_json::json!({"error": {"message": "chat service is not configured", "type": "invalid_request_error", "code": "not_found"}});
+    (axum::http::StatusCode::NOT_FOUND, axum::Json(body)).into_response()
 }
 
 #[cfg(test)]

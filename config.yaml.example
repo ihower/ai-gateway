@@ -70,6 +70,15 @@ services:
       name: "fallback-fastapi"
       request_timeout_ms: 60000
 
+  chat:                              # 選填：POST /v1/chat/completions（OpenAI 格式），整包轉發到單一後端，支援 stream
+    request_timeout_ms: 300000        # 含串流傳輸的整段時間，長輸出要設得夠長
+    # probe_model: "my-model"        # vLLM 等要求 model 欄位的後端請填；llama.cpp 可省略
+    backends:
+      - url: "http://gpu-1.example.com:12381"
+        name: "gpu-1"
+      - url: "http://gpu-2.example.com:12382"
+        name: "gpu-2"
+
   decision_reranker:                 # POST /decision/v2/rerank：Cohere v2 rerank，每份 document 問 decision 一個是非題
     # 沒有自己的後端：共用上面 decision 的後端、權重、健康狀態與 fallback（Jev）
     state_template: "Query: {query}\n\nDocument: {document}"

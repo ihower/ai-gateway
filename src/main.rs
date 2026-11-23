@@ -8,7 +8,7 @@ use ai_gateway::{config, server};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "ai-gateway", version, about = "Embedding / reranker / decision API gateway")]
+#[command(name = "ai-gateway", version, about = "Embedding / reranker / decision / chat API gateway")]
 struct Cli {
     /// 設定檔路徑
     #[arg(long, global = true, env = "AI_GATEWAY_CONFIG", default_value = "config.yaml")]
@@ -59,7 +59,7 @@ enum Cmd {
 }
 
 fn parse_service(s: &str) -> Result<ServiceKind, String> {
-    ServiceKind::ALL.into_iter().find(|k| k.as_str() == s).ok_or_else(|| "expected one of: embedding, reranker, decision".to_string())
+    ServiceKind::ALL.into_iter().find(|k| k.as_str() == s).ok_or_else(|| "expected one of: embedding, reranker, decision, chat".to_string())
 }
 
 #[tokio::main]
@@ -240,8 +240,8 @@ async fn status(config_path: &std::path::Path, json: bool) -> ExitCode {
             let state = serde_json::to_value(b.state).unwrap();
             let reason = b.reason.as_deref().map(|r| format!(" ({r})")).unwrap_or_default();
             let role = if b.fallback { " [fallback]" } else { "" };
-            // decision 沒有筆數概念，不顯示 items
-            let items = if service == "decision" { String::new() } else { format!(" items={}", b.items) };
+            // decision / chat 沒有筆數概念，不顯示 items
+            let items = if service == "decision" || service == "chat" { String::new() } else { format!(" items={}", b.items) };
             println!(
                 "#{:<3} {service:<10} {:<width$} {:<10} inflight={} requests={}{items} errors={}{role}{reason}",
                 b.id,

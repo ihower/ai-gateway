@@ -20,6 +20,12 @@ fn probe_request(kind: ServiceKind, model: Option<&str>) -> (&'static str, Value
             json!({"state": "ping", "questions": {"probe": {"type": "noul", "instructions": "Is this a test?"}}}),
             "answers",
         ),
+        // max_tokens 1：只確認模型能生成，不浪費時間
+        ServiceKind::Chat => (
+            "/v1/chat/completions",
+            json!({"messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}),
+            "choices",
+        ),
     };
     if let Some(m) = model {
         body["model"] = Value::from(m);
@@ -112,18 +118,21 @@ pub async fn build_pool(config: Config, version: u64, prev: Option<&Pool>) -> (P
         if let Some(f) = &svc.fallback {
             backends.push(Arc::new(make(&f.url, 1).with_name(f.name.as_deref()).into_fallback(f.request_timeout_ms)));
         }
-        if backends.iter().all(|b| b.is_disabled()) {
+        if svc.is_configured() && backends.iter().all(|b| b.is_disabled()) {
             tracing::error!(service = %kind, "all backends disabled; requests will get 503");
         }
         let old: Vec<String> = prev.map(|p| p.service(kind).backends.iter().map(|b| b.url.clone()).collect()).unwrap_or_default();
         let new: Vec<String> = svc.urls().map(String::from).collect();
-        changes.insert(
-            kind.to_string(),
-            Changes {
-                added: if prev.is_some() { new.iter().filter(|u| !old.contains(u)).cloned().collect() } else { new.clone() },
-                removed: old.iter().filter(|u| !new.contains(u)).cloned().collect(),
-            },
-        );
+        // 選填的 chat 新舊設定都沒有時不列出
+        if !old.is_empty() || !new.is_empty() {
+            changes.insert(
+                kind.to_string(),
+                Changes {
+                    added: if prev.is_some() { new.iter().filter(|u| !old.contains(u)).cloned().collect() } else { new.clone() },
+                    removed: old.iter().filter(|u| !new.contains(u)).cloned().collect(),
+                },
+            );
+        }
         services.push(ServicePool::new(kind, svc, backends));
     }
 
@@ -136,6 +145,7 @@ pub async fn build_pool(config: Config, version: u64, prev: Option<&Pool>) -> (P
         embedding: services.next().unwrap(),
         reranker: services.next().unwrap(),
         decision: services.next().unwrap(),
+        chat: services.next().unwrap(),
     };
     (pool, report)
 }

@@ -117,6 +117,25 @@ async fn mock_decision(State(m): State<Arc<Mock>>, axum::Json(req): axum::Json<V
     axum::Json(json!({"model": "mock", "answers": {"backend": {"type": "choice", "choice": m.id.to_string()}}})).into_response()
 }
 
+/// OpenAI chat completions：回覆內容為後端 id；`stream: true` 時以 SSE 分兩個 chunk 回傳。
+async fn mock_chat(State(m): State<Arc<Mock>>, axum::Json(req): axum::Json<Value>) -> Response {
+    let probe = req["messages"][0]["content"] == "ping";
+    if let Some(r) = m.failure(probe) {
+        return r;
+    }
+    if req["stream"] == true {
+        let body = format!(
+            "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+            json!({"object": "chat.completion.chunk", "choices": [{"index": 0, "delta": {"content": "backend-"}}]}),
+            json!({"object": "chat.completion.chunk", "choices": [{"index": 0, "delta": {"content": m.id.to_string()}}]}),
+        );
+        return ([(axum::http::header::CONTENT_TYPE, "text/event-stream")], body).into_response();
+    }
+    axum::Json(json!({"object": "chat.completion", "model": "mock",
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": m.id.to_string()}, "finish_reason": "stop"}]}))
+    .into_response()
+}
+
 async fn spawn_mock(id: u64) -> (String, Arc<Mock>) {
     let mock = Arc::new(Mock {
         id,
@@ -130,6 +149,7 @@ async fn spawn_mock(id: u64) -> (String, Arc<Mock>) {
         .route("/v1/embeddings", post(mock_embeddings))
         .route("/v2/rerank", post(mock_rerank))
         .route("/v1/systemone", post(mock_decision))
+        .route("/v1/chat/completions", post(mock_chat))
         .with_state(mock.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
@@ -307,6 +327,61 @@ async fn decision_round_robins_whole_request() {
     assert_eq!(seen, vec!["1", "2", "1", "2"]);
     assert_eq!(m1.hits.load(Ordering::Relaxed), 2);
     assert_eq!(m2.hits.load(Ordering::Relaxed), 2);
+}
+
+/// 在設定檔末尾（`services` 底下）加上 chat 區塊。
+fn with_chat(yaml: String, urls: &[&str]) -> String {
+    let list = urls.iter().map(|u| format!("\n      - url: \"{u}\"")).collect::<String>();
+    format!("{yaml}  chat:\n    backends:{list}\n")
+}
+
+#[tokio::test]
+async fn chat_round_robins_and_streams() {
+    let (u1, m1) = spawn_mock(1).await;
+    let (u2, m2) = spawn_mock(2).await;
+    let (gw, report) = start_gateway(|d| with_chat(config_yaml(d, &[&u1], &[&u1], &[&u1]), &[&u1, &u2])).await;
+    assert!(report.disabled.is_empty());
+    assert!(report.changes.contains_key("chat"));
+    let url = format!("{}/v1/chat/completions", gw.url);
+    let body = json!({"model": "m", "messages": [{"role": "user", "content": "hi"}]});
+    let mut seen = Vec::new();
+    for _ in 0..4 {
+        let (status, out) = post_json(&url, body.clone()).await;
+        assert_eq!(status, StatusCode::OK);
+        seen.push(out["choices"][0]["message"]["content"].as_str().unwrap().to_string());
+    }
+    assert_eq!(seen, vec!["1", "2", "1", "2"]);
+    assert_eq!((m1.hits.load(Ordering::Relaxed), m2.hits.load(Ordering::Relaxed)), (2, 2));
+
+    // stream: true → SSE 原樣轉發
+    let mut stream_body = body.clone();
+    stream_body["stream"] = json!(true);
+    let resp = reqwest::Client::new().post(&url).json(&stream_body).send().await.unwrap();
+    assert_eq!(resp.headers()["content-type"], "text/event-stream");
+    let text = resp.text().await.unwrap();
+    assert!(text.contains("\"backend-\"") && text.ends_with("data: [DONE]\n\n"), "{text}");
+
+    // 4xx 原樣回傳
+    m1.mode.store(BAD_REQUEST, Ordering::Relaxed);
+    m2.mode.store(BAD_REQUEST, Ordering::Relaxed);
+    let (status, out) = post_json(&url, body).await;
+    assert_eq!((status, out), (StatusCode::BAD_REQUEST, json!({"error": "too long"})));
+
+    let st = gw.app.pool.load().status();
+    assert_eq!(st.services["chat"].len(), 2);
+}
+
+#[tokio::test]
+async fn chat_is_404_when_not_configured_and_ignored_by_readyz() {
+    let (u1, _) = spawn_mock(1).await;
+    let (gw, report) = start_gateway(|d| config_yaml(d, &[&u1], &[&u1], &[&u1])).await;
+    assert!(!report.changes.contains_key("chat"));
+    let (status, out) = post_json(&format!("{}/v1/chat/completions", gw.url), json!({"messages": []})).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(out["error"]["message"], "chat service is not configured");
+    let resp = reqwest::get(format!("{}/readyz", gw.url)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(!gw.app.pool.load().status().services.contains_key("chat"));
 }
 
 #[tokio::test]
@@ -956,7 +1031,7 @@ async fn control_disable_backend_until_reload() {
 
     // reload 重新探測，探測通過即恢復
     gw.app.reload().await.unwrap();
-    for kind in ServiceKind::ALL {
+    for kind in [ServiceKind::Embedding, ServiceKind::Reranker, ServiceKind::Decision] {
         assert_eq!(state(kind, 0), BackendState::Enabled);
     }
 
@@ -1027,7 +1102,7 @@ async fn control_enable_backend_after_probe_timeout() {
     let reply = send(Command::Enable { backend: u1.clone(), service: None }).await;
     assert_eq!(reply.messages.len(), 3);
     assert!(reply.messages[0].contains("already enabled") || reply.messages[1].contains("already enabled"));
-    for kind in ServiceKind::ALL {
+    for kind in [ServiceKind::Embedding, ServiceKind::Reranker, ServiceKind::Decision] {
         assert_eq!(state(kind, 0), BackendState::Enabled);
     }
 

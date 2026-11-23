@@ -10,11 +10,11 @@
 
 ## Gateway 功能
 
-以 Rust 實作的 API gateway，前置 embedding（OpenAI 格式）、reranker（Cohere 格式）與 decision（Jev / SystemOne 格式）三類後端。完整規格見 [SPEC.md](SPEC.md)。
+以 Rust 實作的 API gateway，前置 embedding（OpenAI 格式）、reranker（Cohere 格式）、decision（Jev / SystemOne 格式）與選填的 chat（OpenAI chat completions 格式）四類後端。完整規格見 [SPEC.md](SPEC.md)。
 
 - Embedding / reranker：多筆 input / documents 平分到各後端並行處理，再合併回應
 - Rerank 長文件切段：超過設定字元數的 document 切成重疊的多段分別算分，取最高分（`/v2/rerank` 與 `/decision/v2/rerank` 都支援）
-- Decision：整個 request 輪流分派到單一後端
+- Decision / chat：整個 request 輪流分派到單一後端，chat 支援 `stream: true` 串流轉發
 - 啟動與 reload 時實際打一次各後端 API，連不上的後端停用到下次 reload
 - `ai-gateway reload` 熱重載後端清單，進行中的 request 用舊清單完成
 
@@ -123,6 +123,7 @@ RUST_LOG=info,access=off ./ai-gateway serve              # 關閉 access log
 | POST | `/v1/embeddings` | OpenAI 格式 embedding |
 | POST | `/v2/rerank` | Cohere v2 格式 rerank |
 | POST | `/v1/systemone` | Decision（Jev / SystemOne 格式） |
+| POST | `/v1/chat/completions` | OpenAI 格式 chat completions（選填，需設定 `services.chat`） |
 | GET | `/healthz`、`/readyz` | 健康檢查 |
 | GET | `/admin/backends`、`/admin/config`、`/metrics` | 管理埠（唯讀） |
 

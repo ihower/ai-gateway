@@ -1,12 +1,13 @@
 # AI Gateway 規格書
 
-以 Rust 實作的高效能 API Gateway，前置三類推論後端：
+以 Rust 實作的高效能 API Gateway，前置四類推論後端（chat 為選填）：
 
 | 服務 | 對外格式 | 分流策略 |
 |------|----------|----------|
 | Embedding | OpenAI `/v1/embeddings` | 多筆 input **平分**到各後端，合併回應 |
 | Reranker | Cohere v2 `/v2/rerank` | documents **平分**到各後端，依分數合併排序 |
 | Decision | Jev 格式（= Clef SystemOne，`/v1/systemone`） | 整個 request **輪流**分派到單一後端 |
+| Chat（選填） | OpenAI `/v1/chat/completions` | 整個 request **輪流**分派到單一後端，串流轉發（含 SSE） |
 
 ---
 
@@ -53,7 +54,7 @@ services:
     backends:
       - url: "http://127.0.0.1:12351"
       - url: "http://127.0.0.1:12352"
-    fallback:                        # 選填，三種 service 都可設定；見 §8.6
+    fallback:                        # 選填，每種 service 都可設定；見 §8.6
       url: "http://127.0.0.1:12359"
       request_timeout_ms: 120000     # 覆寫 request_timeout_ms
 
@@ -76,6 +77,12 @@ services:
       - url: "http://127.0.0.1:12372"
         weight: 1
 
+  chat:                              # 選填；不設定則 /v1/chat/completions 回 404（見 §6.5）
+    probe_model: null                # vLLM 等要求 model 的後端請填
+    request_timeout_ms: 300000       # 含串流傳輸的整段時間
+    backends:
+      - url: "http://127.0.0.1:12381"
+
   decision_reranker:                 # 選填；不設定則 /decision/v2/rerank 回 404（見 §6.4）
     state_template: "Query: {query}\n\nDocument: {document}"
     instructions: "Does the document contain information that helps answer the query?"
@@ -90,7 +97,7 @@ services:
 - 每個 backend 可選填 `weight`（預設 1），用於拆分比例與輪流權重。
 - 每個 backend 與 fallback 可選填 `name`，只用於顯示：`ai-gateway status` 顯示為 `name (url)`，`/admin/backends` 與 `status --json` 多一個 `name` 欄位；未填時等於 url。前後空白會去除，不可為空字串，同一 service 內不可重複。統計仍以 url 識別，改 name 後 reload 不會讓計數歸零。
 - 每個 service 可覆寫 `defaults` 的任一欄位（例如 reranker 的 `request_timeout_ms` 較長）。
-- 啟動時驗證：URL 格式正確且為 `http://`（未編入 TLS，不支援 `https://` 後端）、每個 service 至少一個 backend；驗證失敗則拒絕啟動（reload 時則保留舊設定，見 §7）。
+- 啟動時驗證：URL 格式正確且為 `http://`（未編入 TLS，不支援 `https://` 後端）、每個 service 至少一個 backend（`chat` 可整段省略，但有寫就必須有 backend）；驗證失敗則拒絕啟動（reload 時則保留舊設定，見 §7）。
 - 「後端連不上」**不算**設定錯誤：該後端會被停用（`disabled`），不影響啟動或 reload（見 §8.2）。
 
 ---
@@ -105,8 +112,9 @@ services:
 | POST | `/v2/rerank` | Cohere v2 格式 rerank |
 | POST | `/v1/systemone` | Decision API（Jev / SystemOne 格式，見 §6） |
 | POST | `/decision/v2/rerank` | Cohere v2 格式 rerank，以 decision 模型逐筆判斷（見 §6.4） |
+| POST | `/v1/chat/completions` | OpenAI 格式 chat completions（選填，見 §6.5） |
 | GET  | `/healthz` | Liveness，永遠回 `200 {"status":"ok"}`（draining 時回 `503`） |
-| GET  | `/readyz` | Readiness，每個 service 至少有一個啟用中的健康後端才回 `200` |
+| GET  | `/readyz` | Readiness，每個**有設定的** service 至少有一個啟用中的健康後端才回 `200`（未設定的 chat 不計） |
 
 ### 3.2 管理端點（`server.admin_listen`，僅 localhost）
 
@@ -132,7 +140,7 @@ services:
 | `ai-gateway disable <id\|name\|url> [--service <s>]` | 手動停用後端：之後的 request 不再分派給它，進行中的 request 照常完成；狀態顯示 `disabled`（原因 `disabled manually`）。下次 `reload` 重新探測決定是否恢復 |
 | `ai-gateway enable <id\|name\|url> [--service <s>]` | 強制啟用後端：解除手動停用、忽略探測失敗造成的 `disabled`，並清除 `unhealthy` 狀態與連續失敗次數。效果持續到下次 `reload` 重新探測 |
 
-- `requests` 是對該後端的呼叫次數（含失敗與重試）；拆分時每個被分到的後端各 +1，與分到幾筆無關。`items` 是該後端**成功**處理的筆數：embedding 為 `input` 數、rerank 為 document 數（有切段時為段數；整包改送 fallback 時為原始 document 數），依權重拆分時看 `items` 才能反映各後端實際分到的量。decision 沒有筆數概念，不顯示 `items`。
+- `requests` 是對該後端的呼叫次數（含失敗與重試）；拆分時每個被分到的後端各 +1，與分到幾筆無關。`items` 是該後端**成功**處理的筆數：embedding 為 `input` 數、rerank 為 document 數（有切段時為段數；整包改送 fallback 時為原始 document 數），依權重拆分時看 `items` 才能反映各後端實際分到的量。decision 與 chat 沒有筆數概念，不顯示 `items`。
 - `status`（含 `--json` 與 `/admin/backends`）為每個後端顯示編號 `#N`：從 1 起的流水號，順序同 `status` 輸出（service 依名稱排序，其內依設定順序，fallback 在最後）。設定變動後 reload，編號可能改變。
 - `disable` 可用編號，或以後端的 `name` / url 比對；以 name / url 指定且未給 `--service` 時套用到所有符合的 service（例如三個 service 共用的 fallback），找不到符合者回 exit `1`。手動停用只持續到下次 `reload`（或重啟）：reload 會重新探測所有後端，探測通過即恢復；也可用 `enable` 立即恢復。停用後該 service 已無可用後端時會印出警告（request 會得到 503），但仍會執行。手動停用的 fallback 也不會被使用。
 - `enable` 的指定方式同 `disable`。用途是後端其實活著、只是 reload 探測當下排隊過久沒回應而被誤判 `disabled` 的情況（§8.2）；強制啟用不會重新探測，由操作者負責判斷。下次 `reload`（或重啟）重新探測，仍失敗則再次停用。
@@ -333,6 +341,16 @@ Jev（TypeSafe，`https://api.typesafe.ai/v1/systemone`）與 Clef 使用相同�
   依分數由高到低排序（同分時 index 小者在前），再套用 `top_n`。`usage.prompt_tokens` 為各筆（各段）`usage.input_tokens` 的總和（後端都沒回則省略）。access log 的 `items` 為 document 數，有切段時另記 `chunks`。
 - 有切段時 fallback（Jev）也照樣切段，每一段都是一次付費呼叫。
 
+### 6.5 Chat Completions — `POST /v1/chat/completions`
+
+OpenAI 格式的 chat completions，可接 llama.cpp、vLLM 等 OpenAI 相容後端。設定為 `services.chat`（§2），**選填**：未設定時回 `404 {"error": {"message": "chat service is not configured", ...}}`，`/readyz`、`status`、reload 輸出都不列出 chat。
+
+- 分流、重試、fallback 與 decision（§6.3、§8.3、§8.6）相同：整個 request 以加權輪流送到單一後端，**不解析也不驗證** body，status code、`Content-Type` 與 body 以串流原樣轉發，因此 `stream: true` 的 SSE 會逐段傳給 client。
+- 只在連線建立失敗時改送其他後端；後端回 5xx 原樣回傳（生成不保證冪等，串流也可能已開始）。
+- `request_timeout_ms` 涵蓋到回應 body 傳完為止，長輸出或串流請設得夠長；逾時會在串流中途中斷連線。
+- Gateway 自身錯誤（503、502、504）為 OpenAI 錯誤格式（§8.5）。
+- 所有 chat 後端應提供同一個模型（或可互換的模型）；`model` 欄位原樣轉送，gateway 不依 model 選後端。
+
 ---
 
 ## 7. 優雅重開（Graceful Reload / Restart）
@@ -435,9 +453,10 @@ decision   (no change)
 | embedding | `POST /v1/embeddings` `{"input": "ping"}` |
 | reranker | `POST /v2/rerank` `{"query": "ping", "documents": ["ping"]}` |
 | decision | `POST /v1/systemone` `{"state": "ping", "questions": {"probe": {"type": "noul", "instructions": "Is this a test?"}}}` |
+| chat | `POST /v1/chat/completions` `{"messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}` |
 
 - 若該 service 設定了 `probe_model`，請求中加上 `"model": <probe_model>`
-- 在 `probe.timeout_ms` 內回 `2xx`，且回應是可解析的 JSON（embedding 含 `data`、reranker 含 `results`、decision 含 `answers`）→ 通過
+- 在 `probe.timeout_ms` 內回 `2xx`，且回應是可解析的 JSON（embedding 含 `data`、reranker 含 `results`、decision 含 `answers`、chat 含 `choices`）→ 通過
 - 其餘情況（連不上、逾時、非 `2xx`、回應格式不符）→ 標記為 `disabled`，記錄 `WARN` 日誌與原因（例如 `connect refused`、`timeout`、`HTTP 503`、`invalid response`）
 - 這樣可以抓到「port 開著但模型還沒載入好」或「這個 port 跑的不是這種服務」的情況
 - 有後端被停用**不會**讓啟動或 reload 失敗；即使某 service 全部停用，gateway 仍會啟動（記錄 `ERROR` 日誌，該 service 回 `503`）
@@ -455,7 +474,7 @@ decision   (no change)
 
 ### 8.3 重試
 - Embedding 與 Rerank 為冪等運算：子請求失敗（連線錯誤、逾時、`5xx`）時，改送**其他**健康後端，最多 `max_retries` 次
-- Decision：只在**連線建立失敗**（request 尚未送出）時重試，避免非冪等操作重複執行
+- Decision 與 Chat：只在**連線建立失敗**（request 尚未送出）時重試，避免非冪等操作重複執行
 - 後端回 `4xx` 不重試，直接把該錯誤回傳給 client
 
 ### 8.4 拆分請求的失敗語意
@@ -464,7 +483,7 @@ decision   (no change)
 - 其餘情況回 `502`（後端錯誤）或 `504`（逾時）
 
 ### 8.5 錯誤格式
-- Embedding 依 OpenAI 格式：
+- Embedding 與 Chat 依 OpenAI 格式：
 
   ```json
   {"error": {"message": "all backends failed", "type": "upstream_error", "code": "bad_gateway"}}

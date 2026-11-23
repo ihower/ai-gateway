@@ -47,8 +47,8 @@ async fn metrics(State(app): State<Arc<App>>) -> impl IntoResponse {
     for (name, kind) in headers {
         let _ = writeln!(out, "# TYPE {name} {kind}");
         for svc in ServiceKind::ALL {
-            // decision 沒有筆數概念
-            if name == "ai_gateway_backend_items_total" && svc == ServiceKind::Decision {
+            // decision / chat 沒有筆數概念
+            if name == "ai_gateway_backend_items_total" && !svc.counts_items() {
                 continue;
             }
             for b in &pool.service(svc).backends {

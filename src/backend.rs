@@ -348,6 +348,8 @@ pub struct Pool {
     pub embedding: ServicePool,
     pub reranker: ServicePool,
     pub decision: ServicePool,
+    /// 未設定時沒有後端。
+    pub chat: ServicePool,
 }
 
 impl Pool {
@@ -356,7 +358,13 @@ impl Pool {
             ServiceKind::Embedding => &self.embedding,
             ServiceKind::Reranker => &self.reranker,
             ServiceKind::Decision => &self.decision,
+            ServiceKind::Chat => &self.chat,
         }
+    }
+
+    /// 設定檔中有設定的 service（選填的 chat 未設定時略過）。
+    pub fn configured(&self) -> impl Iterator<Item = ServiceKind> + '_ {
+        ServiceKind::ALL.into_iter().filter(|k| !self.service(*k).backends.is_empty())
     }
 
     pub fn stats_by_url(&self) -> HashMap<(ServiceKind, String), Arc<BackendStats>> {
@@ -385,12 +393,12 @@ impl Pool {
 
     pub fn status(&self) -> PoolStatus {
         let numbered = self.numbered();
-        let services = ServiceKind::ALL
-            .iter()
+        let services = self
+            .configured()
             .map(|k| {
                 let backends = numbered
                     .iter()
-                    .filter(|(_, kind, _)| kind == k)
+                    .filter(|(_, kind, _)| *kind == k)
                     .map(|(id, _, b)| BackendStatus {
                         id: *id,
                         name: b.name.clone(),
