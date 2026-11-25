@@ -1,6 +1,6 @@
 # ai-gateway
 
-[ihower](https://ihower.tw) 的地端 AI 推論工具箱：整合 embedding、reranking 與 decision 服務，包含 Rust API gateway、NVIDIA CUDA / AMD ROCm 推論後端，以及以 Python FastAPI 實作的 fallback 服務。
+[ihower](https://ihower.tw) 的地端 AI 推論工具箱：整合 embedding、reranking 與 decision 服務，包含 Rust API gateway、NVIDIA CUDA / AMD ROCm / Vulkan 推論後端，以及以 Python FastAPI 實作的 fallback 服務。
 
 當地端 GPU 後端不可用時，fallback 提供以下替代方案：
 
@@ -29,8 +29,15 @@ GPU 後端放在 `backends/`，Python FastAPI fallback 放在根目錄的 `fallb
 | [voyage-4-nano-rocm](backends/voyage-4-nano-rocm/README.md) | AMD ROCm embedding |
 | [llama-nemotron-rerank-1b-v2-cuda](backends/llama-nemotron-rerank-1b-v2-cuda/README.md) | NVIDIA CUDA reranker |
 | [llama-nemotron-rerank-1b-v2-rocm](backends/llama-nemotron-rerank-1b-v2-rocm/README.md) | AMD ROCm reranker |
+| [pplx-decider-flash-cuda](backends/pplx-decider-flash-cuda/README.md) | NVIDIA CUDA decision：vLLM 跑 pplx-decider-flash-v1.3（NVFP4），`start_nvfp4.sh` 啟動 |
+| [pplx-decider-flash-rocm](backends/pplx-decider-flash-rocm/start.sh) | AMD ROCm decision：Docker vLLM ROCm 映像跑 pplx-decider-flash-v1.3（線上 FP8），沿用 CUDA 版的 middleware |
+| [vllm-d3-nano-cuda](backends/vllm-d3-nano-cuda/start.sh) | NVIDIA CUDA decision：`llama serve` 跑 vllm-d3-nano（Q8_0 GGUF） |
+| [vllm-d3-nano-rocm](backends/vllm-d3-nano-rocm/start.sh) | AMD ROCm decision：Docker llama.cpp `server-rocm` 映像跑 vllm-d3-nano（Q8_0 GGUF） |
+| [vllm-d3-nano-vulkan](backends/vllm-d3-nano-vulkan/start.sh) | Vulkan decision：distrobox 容器內 `llama-server` 跑 vllm-d3-nano（Q8_0 GGUF） |
 
-各後端保留獨立的 `pyproject.toml`、`uv.lock` 與 `.venv`，Python、vLLM 和 GPU 套件版本不可混用。請先進入對應子目錄，再依其 README 安裝與啟動；gateway 的建置方式不變。模型快取與原 repo 的虛擬環境不隨整併搬移。
+Decision 後端都提供 SystemOne 格式的 `POST /v1/systemone`，可在 `services.decision` 混用。只有 `start.sh` 的子目錄沒有獨立 README，用法與可覆寫的環境變數寫在腳本開頭的註解。
+
+各 Python 後端保留獨立的 `pyproject.toml`、`uv.lock` 與 `.venv`，Python、vLLM 和 GPU 套件版本不可混用。請先進入對應子目錄，再依其 README 安裝與啟動；gateway 的建置方式不變。模型快取與原 repo 的虛擬環境不隨整併搬移。
 
 
 ## 建置
@@ -131,7 +138,7 @@ RUST_LOG=info,access=off ./ai-gateway serve              # 關閉 access log
 
 建議將 **app、`ai-gateway` 與 Python FastAPI fallback 部署在同一台機器**，透過 localhost 溝通。Gateway 與 fallback 的服務層都很輕量，不需要顯卡；embedding fallback 會載入模型並使用 CPU 推論，仍需預留記憶體與 CPU 資源。
 
-需要 NVIDIA CUDA / AMD ROCm 的推論後端則部署到其他 GPU 機器，由 gateway 經網路呼叫。這樣 GPU 後端不可用時，app 所在機器仍可透過 CPU embedding 或雲端 API fallback 維持服務。
+需要 NVIDIA CUDA / AMD ROCm / Vulkan 的推論後端則部署到其他 GPU 機器，由 gateway 經網路呼叫。這樣 GPU 後端不可用時，app 所在機器仍可透過 CPU embedding 或雲端 API fallback 維持服務。
 
 詳細部署步驟（systemd、設定檔放置、更新流程）見 [docs/deploy.md](docs/deploy.md)。
 
