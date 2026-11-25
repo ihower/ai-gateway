@@ -22,11 +22,11 @@ QUANTIZATION="${QUANTIZATION:-fp8_per_tensor}"
 # 「維度須為 16 的倍數」失敗；vision tower 不會用到。兩者保留 BF16
 DEFAULT_QUANT_CONFIG='{"ignore": ["score*", "*visual*"]}'
 QUANT_CONFIG="${QUANT_CONFIG:-$DEFAULT_QUANT_CONFIG}"
-MAX_MODEL_LEN="${MAX_MODEL_LEN:-16384}"
-# 9070 XT 只有 16 GB，且與 llama-rocm-plamo 共用；vLLM 以「總 VRAM 的比例」計算
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-8192}"
+# 9070 XT 只有 16 GB，且與其他 rerank/embedding 服務共用；vLLM 以「總 VRAM 的比例」計算
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.7}"
 # 直接指定 KV cache 大小（bytes），繞過 gpu_memory_utilization 的預算估算（9070 XT 與其他服務共用時算不出空間）
-# 單一 16384-token sequence 約需 0.5 GiB（8 層 full attention KV）加上 GDN state；預設 1 GiB。設為空字串則交給 vLLM 估算
+# 單一 8192-token sequence 約需 0.25 GiB（8 層 full attention KV）加上 GDN state；預設 1 GiB（可同時容納多個 sequence）。設為空字串則交給 vLLM 估算
 KV_CACHE_MEMORY="${KV_CACHE_MEMORY-1073741824}"
 # prefill CUDA graph 的最大 token 數：預設 512 會吃掉約 3.5 GiB VRAM，16 GB 卡放不下 KV cache
 MAX_CUDAGRAPH_TOKENS="${MAX_CUDAGRAPH_TOKENS:-256}"
