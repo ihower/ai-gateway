@@ -86,6 +86,8 @@ pub struct Backend {
     pub fallback: bool,
     /// 覆寫 service 的 `request_timeout_ms`。
     pub request_timeout_ms: Option<u64>,
+    /// 可接受的輸入字元數上限；`None` = 不限制。
+    pub max_input_chars: Option<usize>,
     consecutive_failures: AtomicU32,
     unhealthy_until_ms: AtomicU64,
     /// 最近一次成功回應的時間（unix ms），用來判斷逾時是過載還是後端卡死。
@@ -113,6 +115,7 @@ impl Backend {
             probe_overridden: AtomicBool::new(false),
             fallback: false,
             request_timeout_ms: None,
+            max_input_chars: None,
             consecutive_failures: AtomicU32::new(0),
             unhealthy_until_ms: AtomicU64::new(0),
             last_success_ms: AtomicU64::new(0),
@@ -125,6 +128,16 @@ impl Backend {
             self.name = n.to_string();
         }
         self
+    }
+
+    pub fn with_max_input_chars(mut self, limit: Option<usize>) -> Self {
+        self.max_input_chars = limit;
+        self
+    }
+
+    /// 輸入 `chars` 個字元是否在這個後端的上限內。
+    pub fn accepts(&self, chars: usize) -> bool {
+        self.max_input_chars.is_none_or(|max| chars <= max)
     }
 
     pub fn into_fallback(mut self, request_timeout_ms: Option<u64>) -> Self {
@@ -267,22 +280,45 @@ impl ServicePool {
     /// 可被選中的一般後端：啟用中且健康者；若全部不健康，有 fallback 時回空（改用 fallback），
     /// 否則退回所有啟用中的後端（SPEC §8.1）。
     pub fn eligible(&self, exclude: &[usize]) -> Vec<usize> {
+        self.eligible_for(exclude, 0)
+    }
+
+    /// 同 `eligible`，但只考慮輸入上限容得下 `chars` 個字元的後端；放不下的後端視同不存在。
+    pub fn eligible_for(&self, exclude: &[usize], chars: usize) -> Vec<usize> {
         let enabled: Vec<usize> = (0..self.backends.len())
-            .filter(|i| !self.backends[*i].fallback && !self.backends[*i].is_disabled() && !exclude.contains(i))
+            .filter(|i| {
+                let b = &self.backends[*i];
+                !b.fallback && !b.is_disabled() && b.accepts(chars) && !exclude.contains(i)
+            })
             .collect();
         let healthy: Vec<usize> =
             enabled.iter().copied().filter(|i| self.backends[*i].state() == BackendState::Enabled).collect();
-        if !healthy.is_empty() || self.fallback().is_some() { healthy } else { enabled }
+        if !healthy.is_empty() || self.fallback_for(chars).is_some() { healthy } else { enabled }
     }
 
     /// 未停用的 fallback 後端索引。fallback 是最後手段，unhealthy 時仍會使用。
     pub fn fallback(&self) -> Option<usize> {
-        self.backends.iter().position(|b| b.fallback && !b.is_disabled())
+        self.fallback_for(0)
+    }
+
+    /// 同 `fallback`，但輸入上限須容得下 `chars` 個字元。
+    pub fn fallback_for(&self, chars: usize) -> Option<usize> {
+        self.backends.iter().position(|b| b.fallback && !b.is_disabled() && b.accepts(chars))
+    }
+
+    /// 是否有任何後端設定了輸入上限；沒有時不必計算 request 的字元數。
+    pub fn has_input_limits(&self) -> bool {
+        self.backends.iter().any(|b| b.max_input_chars.is_some())
     }
 
     /// 依加權輪流挑出最多 `k` 個不重複的後端。
     pub fn pick(&self, k: usize, exclude: &[usize]) -> Vec<usize> {
-        let eligible = self.eligible(exclude);
+        self.pick_for(k, exclude, 0)
+    }
+
+    /// 同 `pick`，但只挑輸入上限容得下 `chars` 個字元的後端。
+    pub fn pick_for(&self, k: usize, exclude: &[usize], chars: usize) -> Vec<usize> {
+        let eligible = self.eligible_for(exclude, chars);
         let k = k.min(eligible.len());
         let mut chosen = Vec::with_capacity(k);
         if k == 0 {
@@ -476,7 +512,7 @@ mod tests {
         let cfg = ServiceConfig {
             tuning: Tuning::default(),
             probe_model: None,
-            backends: weights.iter().enumerate().map(|(i, w)| BackendConfig { url: format!("http://b{i}"), name: None, weight: *w }).collect(),
+            backends: weights.iter().enumerate().map(|(i, w)| BackendConfig { url: format!("http://b{i}"), name: None, weight: *w, max_input_chars: None }).collect(),
             fallback: None,
             chunking: None,
         };
@@ -539,6 +575,31 @@ mod tests {
         assert_eq!(p.pick(2, &[]), vec![1]);
         let p = pool(&[1], &[0]);
         assert!(p.pick(1, &[]).is_empty());
+    }
+
+    #[test]
+    fn input_limit_excludes_backends_that_cannot_fit() {
+        let mut p = pool_with_fallback(&[1, 1], &[], Some(None));
+        let limits = [Some(10), None, Some(5)];
+        for (b, limit) in p.backends.iter_mut().zip(limits) {
+            Arc::get_mut(b).unwrap().max_input_chars = limit;
+        }
+        assert!(p.has_input_limits());
+        assert_eq!(p.eligible_for(&[], 10), vec![0, 1]);
+        assert_eq!(p.eligible_for(&[], 11), vec![1]);
+        for _ in 0..3 {
+            assert_eq!(p.pick_for(2, &[], 11), vec![1]);
+        }
+        // fallback 也要放得下
+        assert_eq!(p.fallback_for(5), Some(2));
+        assert_eq!(p.fallback_for(6), None);
+        // 放得下的只剩 unhealthy 的後端、且 fallback 放不下 → 仍勉強嘗試
+        let t = Tuning::default();
+        for _ in 0..3 {
+            p.backends[1].record_failure(&t, "x");
+        }
+        assert_eq!(p.eligible_for(&[], 11), vec![1]);
+        assert!(p.eligible_for(&[], 5).contains(&0));
     }
 
     #[test]

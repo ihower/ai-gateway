@@ -838,6 +838,79 @@ async fn decision_rerank_chunks_long_documents_and_takes_max() {
     assert_eq!(mf.hits.load(Ordering::Relaxed), 5);
 }
 
+/// 在 `services.<service>` 底下的某個後端加上 `max_input_chars`。
+fn with_limit(yaml: String, service: &str, url: &str, limit: usize) -> String {
+    let start = yaml.find(&format!("  {service}:\n")).unwrap();
+    let entry = format!("- url: \"{url}\"");
+    let at = start + yaml[start..].find(&entry).unwrap() + entry.len();
+    format!("{}\n        max_input_chars: {limit}{}", &yaml[..at], &yaml[at..])
+}
+
+#[tokio::test]
+async fn decision_skips_backends_whose_input_limit_is_too_small() {
+    let (u1, m1) = spawn_mock(1).await;
+    let (u2, m2) = spawn_mock(2).await;
+    let (gw, _) = start_gateway(|d| with_limit(config_yaml(d, &[&u1], &[&u1], &[&u1, &u2]), "decision", &u1, 20)).await;
+    let url = format!("{}/v1/systemone", gw.url);
+    // 字元數 = state + "noul" + "?"
+    let body = |state: &str| json!({"state": state, "questions": {"q": {"type": "noul", "instructions": "?"}}});
+    let choice = |v: &Value| v["answers"]["backend"]["choice"].as_str().unwrap().to_string();
+    let mut seen = Vec::new();
+    for _ in 0..2 {
+        seen.push(choice(&post_json(&url, body("s")).await.1));
+    }
+    seen.sort();
+    assert_eq!(seen, ["1", "2"]);
+    // 16 + 5 = 21 字元：超過後端 1 的上限，只送後端 2
+    for _ in 0..4 {
+        assert_eq!(choice(&post_json(&url, body(&"一".repeat(16))).await.1), "2");
+    }
+    assert_eq!((m1.hits.load(Ordering::Relaxed), m2.hits.load(Ordering::Relaxed)), (1, 5));
+
+    // 所有後端都放不下 → 400，不送出
+    let (gw, _) = start_gateway(|d| with_limit(config_yaml(d, &[&u1], &[&u1], &[&u1]), "decision", &u1, 20)).await;
+    let (status, out) = post_json(&format!("{}/v1/systemone", gw.url), body(&"a".repeat(16))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(out["error"].as_str().unwrap().contains("input too long: 21 characters"), "{out}");
+    assert_eq!(m1.hits.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn decision_rerank_routes_long_chunks_by_input_limit() {
+    let (u1, m1) = spawn_mock(1).await;
+    let (u2, m2) = spawn_mock(2).await;
+    let (fb, mf) = spawn_mock(9).await;
+    // 每段字元數 = "Query: q\n\nDocument: "（20）+ document + "noul" + "?" = 25 + document
+    let rr = "    instructions: \"?\"\n";
+    let (gw, _) = start_gateway(|d| {
+        with_decision_reranker(with_limit(config_yaml(d, &[&u1], &[&u1], &[&u1, &u2]), "decision", &u1, 30), rr)
+    })
+    .await;
+    let url = format!("{}/decision/v2/rerank", gw.url);
+    let long = ["a".repeat(10), "b".repeat(10), "c".repeat(10)];
+    let (status, _) = post_json(&url, json!({"query": "q", "documents": long})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!((m1.hits.load(Ordering::Relaxed), m2.hits.load(Ordering::Relaxed)), (0, 3));
+    let (status, _) = post_json(&url, json!({"query": "q", "documents": ["a", "b", "c", "d"]})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!((m1.hits.load(Ordering::Relaxed), m2.hits.load(Ordering::Relaxed)), (2, 5));
+
+    // 只有放不下的一般後端：有 fallback 時整個 request 改送 fallback，沒有則 400
+    let (gw, _) = start_gateway(|d| {
+        let yaml = with_limit(config_yaml(d, &[&u1], &[&u1], &[&u1]), "decision", &u1, 30);
+        with_decision_reranker(with_fallback_on(yaml, "decision", &fb), rr)
+    })
+    .await;
+    let (status, out) = post_json(&format!("{}/decision/v2/rerank", gw.url), json!({"query": "q", "documents": ["a", long[0]]})).await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+    assert_eq!(out["model"], json!("mock-9"));
+    assert_eq!((m1.hits.load(Ordering::Relaxed), mf.hits.load(Ordering::Relaxed)), (2, 2));
+    let (gw, _) = start_gateway(|d| with_decision_reranker(with_limit(config_yaml(d, &[&u1], &[&u1], &[&u1]), "decision", &u1, 30), rr)).await;
+    let (status, out) = post_json(&format!("{}/decision/v2/rerank", gw.url), json!({"query": "q", "documents": [long[0]]})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{out}");
+    assert!(out["message"].as_str().unwrap().contains("input too long: 35 characters"), "{out}");
+}
+
 /// 收集 tracing 輸出（JSON），供檢查 access log。
 #[derive(Clone, Default)]
 struct LogBuf(Arc<std::sync::Mutex<Vec<u8>>>);

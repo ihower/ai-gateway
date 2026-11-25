@@ -14,6 +14,25 @@ use crate::backend::{Backend, ServicePool, now_ms};
 
 pub const REQUEST_ID: &str = "x-request-id";
 
+/// 估計輸入長度：所有 JSON 字串值（不含 key）的字元數總和，用於比對後端的 `max_input_chars`。
+/// 不做 tokenize：多數 tokenizer 下一個 token 至少一個字元（中文約 1、英文約 4），字元數大致是 token 數的上界。
+pub fn text_chars(v: &serde_json::Value) -> usize {
+    match v {
+        serde_json::Value::String(s) => s.chars().count(),
+        serde_json::Value::Array(a) => a.iter().map(text_chars).sum(),
+        serde_json::Value::Object(o) => o.values().map(text_chars).sum(),
+        _ => 0,
+    }
+}
+
+/// request body 的 `text_chars`；service 沒有後端設定上限時不解析（回 0）。無法解析的 JSON 也回 0，交由後端回錯。
+pub fn body_chars(svc: &ServicePool, body: &[u8]) -> usize {
+    if !svc.has_input_limits() {
+        return 0;
+    }
+    serde_json::from_slice::<serde_json::Value>(body).map(|v| text_chars(&v)).unwrap_or(0)
+}
+
 /// 從 client request 帶到後端的 header，以及記錄這個 request 呼叫過哪些後端。
 #[derive(Clone, Default)]
 pub struct Forward {
@@ -129,6 +148,8 @@ fn root_cause(e: &(dyn std::error::Error + 'static)) -> String {
 pub enum GatewayError {
     BadRequest(String),
     NoBackend,
+    /// 輸入超過所有可用後端的 `max_input_chars`。
+    InputTooLong(usize),
     Upstream(CallError),
 }
 
@@ -160,6 +181,9 @@ impl GatewayError {
             }
             GatewayError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
             GatewayError::NoBackend => (StatusCode::SERVICE_UNAVAILABLE, "no available backend".to_string()),
+            GatewayError::InputTooLong(chars) => {
+                (StatusCode::BAD_REQUEST, format!("input too long: {chars} characters exceeds max_input_chars of every available backend"))
+            }
             GatewayError::Upstream(CallError::Timeout) => (StatusCode::GATEWAY_TIMEOUT, "backend timed out".to_string()),
             GatewayError::Upstream(e) => (StatusCode::BAD_GATEWAY, format!("backend error: {}", e.reason())),
         };
@@ -237,6 +261,7 @@ pub async fn call_once(svc: &ServicePool, idx: usize, path: &str, body: Bytes, f
 /// 送出並在後端失敗時改送其他後端，最多 `max_retries` 次（embedding / rerank 為冪等運算）；
 /// `use_fallback` 時，一般後端都失敗後若有 fallback 再送一次（不計入 `max_retries`）。
 /// `parse` 檢查 2xx 回應；檢查失敗視同後端失敗。成功時把 `items` 記到實際處理的後端。
+/// 重試只挑輸入上限容得下 `chars` 個字元的後端（0 = 不檢查）。
 #[allow(clippy::too_many_arguments)]
 pub async fn call_with_retry<T>(
     svc: &ServicePool,
@@ -244,6 +269,7 @@ pub async fn call_with_retry<T>(
     path: &str,
     body: Bytes,
     items: usize,
+    chars: usize,
     fwd: &Forward,
     use_fallback: bool,
     parse: impl Fn(Buffered) -> Result<T, String>,
@@ -269,8 +295,8 @@ pub async fn call_with_retry<T>(
         if !err.is_backend_failure() {
             return Err(err);
         }
-        let retry = if tried.len() <= svc.tuning.max_retries as usize { svc.pick(1, &tried).first().copied() } else { None };
-        match retry.or_else(|| svc.fallback().filter(|f| use_fallback && !tried.contains(f))) {
+        let retry = if tried.len() <= svc.tuning.max_retries as usize { svc.pick_for(1, &tried, chars).first().copied() } else { None };
+        match retry.or_else(|| svc.fallback_for(chars).filter(|f| use_fallback && !tried.contains(f))) {
             Some(next) => {
                 let msg = if svc.backends[next].fallback { "falling back" } else { "retrying on another backend" };
                 tracing::warn!(service = %svc.kind, backend = %svc.backends[idx].url, retry_to = %svc.backends[next].url,
@@ -284,14 +310,20 @@ pub async fn call_with_retry<T>(
 }
 
 /// 透明轉發並以串流回傳 body；只在連線建立失敗時改送其他後端（decision 不保證冪等），
-/// 一般後端都連不上（或都不可用）時改送 fallback。
+/// 一般後端都連不上（或都不可用）時改送 fallback。輸入超過 `max_input_chars` 的後端不會被挑到。
 pub async fn forward_streaming(svc: &ServicePool, path: &str, body: Bytes, fwd: &Forward) -> Result<Response, GatewayError> {
+    let chars = body_chars(svc, &body);
     let mut tried = Vec::new();
     let mut last_err: Option<CallError> = None;
     loop {
-        let retry = if tried.len() <= svc.tuning.max_retries as usize { svc.pick(1, &tried).first().copied() } else { None };
-        let Some(idx) = retry.or_else(|| svc.fallback().filter(|f| !tried.contains(f))) else {
-            return Err(last_err.map(GatewayError::from).unwrap_or(GatewayError::NoBackend));
+        let retry = if tried.len() <= svc.tuning.max_retries as usize { svc.pick_for(1, &tried, chars).first().copied() } else { None };
+        let Some(idx) = retry.or_else(|| svc.fallback_for(chars).filter(|f| !tried.contains(f))) else {
+            if let Some(e) = last_err {
+                return Err(e.into());
+            }
+            // 有後端可用，只是都放不下這個 request
+            let usable = !svc.eligible(&[]).is_empty() || svc.fallback().is_some();
+            return Err(if usable && chars > 0 { GatewayError::InputTooLong(chars) } else { GatewayError::NoBackend });
         };
         tried.push(idx);
         let backend = &svc.backends[idx];
@@ -333,5 +365,17 @@ pub async fn forward_streaming(svc: &ServicePool, path: &str, body: Bytes, fwd: 
                 last_err = Some(err);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn counts_chars_of_string_values_only() {
+        let v = json!({"state": "一二三", "questions": {"q": {"type": "noul", "instructions": "ab"}}, "n": 12, "ok": true});
+        assert_eq!(text_chars(&v), 3 + 4 + 2);
+        assert_eq!(text_chars(&json!({"messages": [{"role": "user", "content": "hi"}]})), 4 + 2);
     }
 }

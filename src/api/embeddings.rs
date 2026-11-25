@@ -108,7 +108,7 @@ async fn embeddings(svc: &ServicePool, fwd: Forward, body: Bytes) -> Result<Resp
     fwd.log.set_items(n);
     let chunks = plan_chunks(svc, n)?;
     if chunks.len() == 1 {
-        let buf = call_with_retry(svc, chunks[0].backend, PATH, body, n, &fwd, true, Ok).await?;
+        let buf = call_with_retry(svc, chunks[0].backend, PATH, body, n, 0, &fwd, true, Ok).await?;
         return Ok(passthrough(buf));
     }
 
@@ -120,7 +120,7 @@ async fn embeddings(svc: &ServicePool, fwd: Forward, body: Bytes) -> Result<Resp
         let fwd = &fwd;
         let chunk = *chunk;
         async move {
-            let part = call_with_retry(svc, chunk.backend, PATH, sub_body, chunk.len, fwd, true, |buf| parse_part(&buf.body, chunk.len)).await?;
+            let part = call_with_retry(svc, chunk.backend, PATH, sub_body, chunk.len, 0, fwd, true, |buf| parse_part(&buf.body, chunk.len)).await?;
             Ok::<_, GatewayError>((chunk, part))
         }
     });

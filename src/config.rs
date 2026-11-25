@@ -152,6 +152,10 @@ pub struct BackendConfig {
     pub name: Option<String>,
     #[serde(default = "default_weight")]
     pub weight: u32,
+    /// 可接受的輸入字元數上限（request 中所有 JSON 字串值的字元數總和）；超過時不挑這個後端。
+    /// `None` = 不限制。只有 decision 與 chat 可設定。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_input_chars: Option<usize>,
 }
 
 impl BackendConfig {
@@ -170,6 +174,9 @@ pub struct FallbackConfig {
     /// 覆寫 service 的 `request_timeout_ms`；CPU 推論較慢，通常要設得較長。
     #[serde(default)]
     pub request_timeout_ms: Option<u64>,
+    /// 同 `BackendConfig::max_input_chars`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_input_chars: Option<usize>,
 }
 
 /// rerank 的長文件切段：超過 `max_chars` 個字元的 document 切成多段分別算分，取最高分。
@@ -357,7 +364,8 @@ impl RawService {
                 bail!("services.{kind}.backends: duplicate url {url}");
             }
             let name = check_name(kind, b.name, &url, &backends)?;
-            backends.push(BackendConfig { url, name, weight: b.weight });
+            check_max_input_chars(kind, &url, b.max_input_chars)?;
+            backends.push(BackendConfig { url, name, weight: b.weight, max_input_chars: b.max_input_chars });
         }
         let fallback = match self.fallback {
             Some(f) => {
@@ -366,7 +374,8 @@ impl RawService {
                     bail!("services.{kind}.fallback: {url} is also listed in backends");
                 }
                 let name = check_name(kind, f.name, &url, &backends)?;
-                Some(FallbackConfig { url, name, request_timeout_ms: f.request_timeout_ms })
+                check_max_input_chars(kind, &url, f.max_input_chars)?;
+                Some(FallbackConfig { url, name, request_timeout_ms: f.request_timeout_ms, max_input_chars: f.max_input_chars })
             }
             None => None,
         };
@@ -377,6 +386,18 @@ impl RawService {
             c.validate(&format!("services.{kind}"))?;
         }
         Ok(ServiceConfig { tuning, probe_model: self.probe_model, backends, fallback, chunking: self.chunking })
+    }
+}
+
+/// `max_input_chars` 只對整包轉發的 decision / chat 有意義；embedding / reranker 由 gateway 拆分，另有 chunking。
+fn check_max_input_chars(kind: ServiceKind, url: &str, limit: Option<usize>) -> anyhow::Result<()> {
+    match limit {
+        None => Ok(()),
+        Some(_) if !matches!(kind, ServiceKind::Decision | ServiceKind::Chat) => {
+            bail!("services.{kind}: max_input_chars is only supported for decision and chat")
+        }
+        Some(0) => bail!("services.{kind}: max_input_chars of {url} must be at least 1"),
+        Some(_) => Ok(()),
     }
 }
 
@@ -545,6 +566,21 @@ services:
         assert!(parse(&dup_fallback, Path::new("c.yaml")).unwrap_err().to_string().contains("also listed"));
         let rerank_fallback = SAMPLE.replace("    request_timeout_ms: 5000\n", "    request_timeout_ms: 5000\n    fallback: {url: \"http://10.0.0.9:1\"}\n");
         assert_eq!(parse(&rerank_fallback, Path::new("c.yaml")).unwrap().reranker.fallback.unwrap().url, "http://10.0.0.9:1");
+    }
+
+    #[test]
+    fn parses_max_input_chars() {
+        let dec = r#"backends: [{url: "http://10.0.0.4:1"}]"#;
+        let with = |b: &str| SAMPLE.replace(dec, b);
+        let c = parse(&with(r#"backends: [{url: "http://10.0.0.4:1", max_input_chars: 7000}]
+    fallback: {url: "http://10.0.0.5:1", max_input_chars: 100}"#), Path::new("c.yaml")).unwrap();
+        assert_eq!(c.decision.backends[0].max_input_chars, Some(7000));
+        assert_eq!(c.decision.fallback.unwrap().max_input_chars, Some(100));
+        assert_eq!(parse(SAMPLE, Path::new("c.yaml")).unwrap().decision.backends[0].max_input_chars, None);
+        let zero = with(r#"backends: [{url: "http://10.0.0.4:1", max_input_chars: 0}]"#);
+        assert!(parse(&zero, Path::new("c.yaml")).unwrap_err().to_string().contains("at least 1"));
+        let rr = SAMPLE.replace(r#"[{url: "http://10.0.0.3:1"}]"#, r#"[{url: "http://10.0.0.3:1", max_input_chars: 10}]"#);
+        assert!(parse(&rr, Path::new("c.yaml")).unwrap_err().to_string().contains("only supported for decision and chat"));
     }
 
     #[test]

@@ -14,7 +14,7 @@ use super::{json_response, parse_object, split_text, truncate_chars};
 use crate::backend::{ServicePool, smooth_wrr_schedule};
 use crate::config::DecisionRerankerConfig;
 use crate::server::App;
-use crate::upstream::{CallError, CallLog, Flavor, Forward, GatewayError, call_once, call_with_retry};
+use crate::upstream::{CallError, CallLog, Flavor, Forward, GatewayError, call_once, call_with_retry, text_chars};
 
 const PATH: &str = "/v1/systemone";
 /// 是非題的題目 ID。
@@ -75,7 +75,8 @@ fn render_state(template: &str, query: &str, document: &str) -> String {
     template.split("{document}").map(|part| part.replace("{query}", query)).collect::<Vec<_>>().join(document)
 }
 
-fn payload(cfg: &DecisionRerankerConfig, query: &str, document: &str, instructions: &str) -> Bytes {
+/// 一段 decision 呼叫的 body 與其輸入字元數（比對後端的 `max_input_chars`）。
+fn payload(cfg: &DecisionRerankerConfig, query: &str, document: &str, instructions: &str) -> (Bytes, usize) {
     let mut body = json!({
         "state": render_state(&cfg.state_template, query, document),
         "questions": {QUESTION: {"type": "noul", "instructions": instructions}},
@@ -83,7 +84,8 @@ fn payload(cfg: &DecisionRerankerConfig, query: &str, document: &str, instructio
     if let Some(model) = &cfg.model {
         body["model"] = Value::from(model.as_str());
     }
-    Bytes::from(serde_json::to_vec(&body).expect("serialize decision request"))
+    let chars = text_chars(&body);
+    (Bytes::from(serde_json::to_vec(&body).expect("serialize decision request")), chars)
 }
 
 struct Judgment {
@@ -102,27 +104,38 @@ fn parse_judgment(body: &[u8]) -> Result<Judgment, String> {
     Ok(Judgment { score, input_tokens: v["usage"]["input_tokens"].as_u64(), model: v["model"].as_str().map(String::from) })
 }
 
-/// 每筆 document 指定一個一般後端：依權重平滑輪流交錯，讓並行上限內的呼叫平均分到各後端。
-fn assign_backends(svc: &ServicePool, n: usize) -> Vec<usize> {
-    let chosen = svc.pick(n, &[]);
+/// 每一段指定一個一般後端：依權重平滑輪流交錯，讓並行上限內的呼叫平均分到各後端；
+/// 輪到的後端放不下該段（`max_input_chars`）時，順著輪流順序改給下一個放得下的後端。
+/// 一般後端都不可用回 `NoBackend`；有某段沒有任何後端放得下回 `InputTooLong`（由呼叫端決定是否改送 fallback）。
+fn assign_backends(svc: &ServicePool, sizes: &[usize]) -> Result<Vec<usize>, GatewayError> {
+    let chosen = svc.pick(sizes.len(), &[]);
     if chosen.is_empty() {
-        return chosen;
+        return Err(GatewayError::NoBackend);
     }
     let weights: Vec<u32> = chosen.iter().map(|i| svc.backends[*i].weight).collect();
     let schedule = smooth_wrr_schedule(&weights);
-    (0..n).map(|i| chosen[schedule[i % schedule.len()]]).collect()
+    sizes
+        .iter()
+        .enumerate()
+        .map(|(i, &chars)| {
+            (0..schedule.len())
+                .map(|step| chosen[schedule[(i + step) % schedule.len()]])
+                .find(|b| svc.backends[*b].accepts(chars))
+                .ok_or(GatewayError::InputTooLong(chars))
+        })
+        .collect()
 }
 
 /// 送出所有判斷並依原順序回傳；任一筆失敗即整體失敗（其餘進行中的呼叫隨之取消）。
 async fn judge_all(
     svc: &ServicePool,
-    payloads: &[Bytes],
+    payloads: &[(Bytes, usize)],
     backend_for: impl Fn(usize) -> usize,
     limit: usize,
     fwd: &Forward,
 ) -> Result<Vec<Judgment>, GatewayError> {
     // 先收成 Vec：直接把借用 payloads 的 iterator 交給 stream 會讓 handler 的 future 無法滿足 axum 的 Send 推導
-    let calls: Vec<_> = payloads.iter().cloned().enumerate().map(|(i, body)| {
+    let calls: Vec<_> = payloads.iter().cloned().enumerate().map(|(i, (body, chars))| {
         let first = backend_for(i);
         async move {
             let judgment = if svc.backends[first].fallback {
@@ -131,7 +144,7 @@ async fn judge_all(
                 parse_judgment(&buf.body).map_err(CallError::Invalid)?
             } else {
                 // 判斷相關度沒有副作用，可以像 rerank 一樣在 5xx / 逾時時改送其他後端
-                call_with_retry(svc, first, PATH, body, 0, fwd, false, |buf| parse_judgment(&buf.body)).await?
+                call_with_retry(svc, first, PATH, body, 0, chars, fwd, false, |buf| parse_judgment(&buf.body)).await?
             };
             Ok::<_, GatewayError>((i, judgment))
         }
@@ -160,18 +173,20 @@ async fn rerank(svc: &ServicePool, cfg: &DecisionRerankerConfig, fwd: Forward, b
         fwd.log.set_chunks(m);
     }
     let limit = cfg.max_concurrency.unwrap_or(m).max(1);
-    let fallback = svc.fallback().filter(|_| cfg.use_fallback);
+    // 改送 fallback 時是整個 request 一起送，fallback 必須放得下最長的一段
+    let longest = payloads.iter().map(|(_, chars)| *chars).max().unwrap_or(0);
+    let fallback = svc.fallback_for(longest).filter(|_| cfg.use_fallback);
 
     let judgments = if m == 0 {
         Vec::new()
     } else {
-        let assigned = assign_backends(svc, m);
-        if assigned.is_empty() {
-            // 一般後端都不可用：整個 request 交給 fallback
-            let fb = fallback.ok_or(GatewayError::NoBackend)?;
-            judge_all(svc, &payloads, |_| fb, limit, &fwd).await?
-        } else {
-            match judge_all(svc, &payloads, |i| assigned[i], limit, &fwd).await {
+        match assign_backends(svc, &payloads.iter().map(|(_, chars)| *chars).collect::<Vec<_>>()) {
+            // 一般後端都不可用，或有某段沒有一般後端放得下：整個 request 交給 fallback
+            Err(e) => {
+                let fb = fallback.ok_or(e)?;
+                judge_all(svc, &payloads, |_| fb, limit, &fwd).await?
+            }
+            Ok(assigned) => match judge_all(svc, &payloads, |i| assigned[i], limit, &fwd).await {
                 Ok(j) => j,
                 // fallback 是不同模型，分數不能混排：任一筆失敗時整個 request 改送 fallback
                 Err(GatewayError::Upstream(e)) if e.is_backend_failure() && fallback.is_some() => {
@@ -181,7 +196,7 @@ async fn rerank(svc: &ServicePool, cfg: &DecisionRerankerConfig, fwd: Forward, b
                     judge_all(svc, &payloads, |_| fb, limit, &fwd).await?
                 }
                 Err(e) => return Err(e),
-            }
+            },
         }
     };
 

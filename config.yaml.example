@@ -65,6 +65,7 @@ services:
       - url: "http://gpu-2.example.com:12372"
         name: "gpu-2"
         weight: 1
+        max_input_chars: 7000        # 選填（decision / chat）：輸入超過此字元數時不挑這台，例如 context window 只有 8192 tokens 的後端
     fallback:                        # 所有一般後端都失效時才使用：Jev jev-1.14.0（經 fallback-fastapi/server.py 轉送）
       url: "http://127.0.0.1:12359"
       name: "fallback-fastapi"

@@ -96,6 +96,7 @@ services:
 
 - 每個 backend 可選填 `weight`（預設 1），用於拆分比例與輪流權重。
 - 每個 backend 與 fallback 可選填 `name`，只用於顯示：`ai-gateway status` 顯示為 `name (url)`，`/admin/backends` 與 `status --json` 多一個 `name` 欄位；未填時等於 url。前後空白會去除，不可為空字串，同一 service 內不可重複。統計仍以 url 識別，改 name 後 reload 不會讓計數歸零。
+- decision 與 chat 的 backend 與 fallback 可選填 `max_input_chars`：此後端可接受的輸入字元數上限（用於 context window 較小的後端），見 §8.1。embedding / reranker 不支援（設定會拒絕啟動），它們由 gateway 拆分並另有 chunking。
 - 每個 service 可覆寫 `defaults` 的任一欄位（例如 reranker 的 `request_timeout_ms` 較長）。
 - 啟動時驗證：URL 格式正確且為 `http://`（未編入 TLS，不支援 `https://` 後端）、每個 service 至少一個 backend（`chat` 可整段省略，但有寫就必須有 backend）；驗證失敗則拒絕啟動（reload 時則保留舊設定，見 §7）。
 - 「後端連不上」**不算**設定錯誤：該後端會被停用（`disabled`），不影響啟動或 reload（見 §8.2）。
@@ -432,6 +433,11 @@ decision   (no change)
 - 拆分時的 H（健康後端數）只計算**啟用中且健康**的後端。
 - `disabled` 的後端一律不選。
 - 啟用中的後端若全部 `unhealthy`，仍嘗試全部（避免因誤判而完全停擺）；設有 fallback 時改送 fallback（§8.6）。
+- **輸入上限**（`max_input_chars`）：request 的輸入字元數超過某後端的上限時，該後端（含 fallback）對這個 request 視同不存在，挑選、重試、改送 fallback 都跳過它。
+  - 字元數 = request JSON 中所有**字串值**（不含 key）的 Unicode 字元數總和；不做 tokenize。多數 tokenizer 下一個 token 至少約一個字元（中文約 1–1.5 字元、英文約 4 字元），因此字元數大致是 token 數的上界。例如 context window 8192 tokens、內容可能是中文時，建議設 7000 左右，保留後端 prompt 樣板、chat template 與輸出的空間；內容以英文為主時此值偏保守。
+  - `/v1/systemone`、`/v1/chat/completions` 以整個 request body 計算（`model`、`role` 等字串也計入；多題 decision 會計入所有題目；chat 的 base64 圖片也會計入）。`/decision/v2/rerank` 以每一段 decision 呼叫（state + 題目）各自計算：輪到的後端放不下該段時，順著輪流順序改給下一個放得下的後端；有任何一段沒有一般後端放得下時，整個 request 改送 fallback（需放得下最長的一段、且 `use_fallback`）。
+  - 有後端可用、但都放不下 → 回 `400`（`input too long: N characters exceeds max_input_chars of every available backend`），不送出。
+  - service 內沒有任何後端設定上限時，不解析 request body，行為與未支援此功能時相同。
 - 某 service 的後端全部 `disabled` → 該 service 的 request 直接回 `503`（`no available backend`），`/readyz` 回 `503`。
 
 ### 8.2 後端狀態與健康檢查
